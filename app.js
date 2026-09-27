@@ -207,6 +207,7 @@ function route() {
 }
 async function render() {
   S.token++;
+  document.body.classList.remove("printing-plan");
   setStatus("");
   if (!S.session) return renderAuth();
   if (!S.me) { try { await loadMe(); } catch (e) { setStatus("Kunne ikke hente din profil: " + e.message, true); return; } }
@@ -881,6 +882,7 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
       <div class="seg" role="group" aria-label="Visning">
         <button data-view="binder" aria-pressed="${G.view === "binder"}">Perm</button>
         <button data-view="list" aria-pressed="${G.view === "list"}">Mangler-liste</button>
+        <button data-view="plan" aria-pressed="${G.view === "plan"}">Permeplan</button>
       </div>
       <div class="seg" role="group" aria-label="Filter">
         <button data-filter="all" aria-pressed="${G.filter === "all"}">Alle</button>
@@ -929,8 +931,60 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
   };
   const search = list => { const s = G.q.toLowerCase(); return !s ? list : list.filter(c => c.name.toLowerCase().includes(s) || String(c.localId).toLowerCase() === s || (multi && c._setName.toLowerCase().includes(s))); };
 
+  // ---- permeplan: hvilket kort i hvilken lomme
+  const PLAN = { per: 9, spread: true, right: true, ...store.get("kp-plan", {}) };
+  const GRIDS = { 4: [2, 2], 9: [3, 3], 12: [3, 4], 16: [4, 4] };
+  const renderPlan = el => {
+    const [cols, rows] = GRIDS[PLAN.per] || GRIDS[9];
+    // alle kort i nummerrækkefølge (sæt i udgivelsesrækkefølge), én lomme pr. version
+    const pockets = cards.slice().sort(cmpCard).flatMap(c => slots(c.id).map(v => ({ c, v })));
+    const pages = [];
+    for (let i = 0; i < pockets.length; i += PLAN.per) pages.push(pockets.slice(i, i + PLAN.per));
+    const owned = pockets.filter(p => q(p.c.id, p.v)).length;
+    const firstGap = pockets.findIndex(p => !q(p.c.id, p.v));
+    const where = i => `side ${Math.floor(i / PLAN.per) + 1}, lomme ${i % PLAN.per + 1}`;
+    const pageHtml = (pg, n) => `<section class="plan-page" style="--cols:${cols}">
+        <header><b>Side ${n + 1}</b><span>${pg.filter(p => q(p.c.id, p.v)).length}/${pg.length}</span></header>
+        <div class="plan-grid">${Array.from({ length: PLAN.per }, (_, k) => {
+          const p = pg[k]; if (!p) return `<div class="plan-slot empty-slot"></div>`;
+          const has = q(p.c.id, p.v) > 0, img = imgUrl(p.c);
+          return `<button class="plan-slot${has ? " has" : ""}" data-pid="${esc(p.c.id)}" title="${esc(p.c.name)} · ${esc(p.c._setName)} ${esc(p.c.localId)} · ${VLABEL[p.v]}${has ? "" : " (mangler)"}">
+            ${img ? `<img loading="lazy" src="${esc(img)}" alt="">` : ""}
+            <span class="plan-lbl">${multi ? `<small>${esc(p.c._setName)}</small>` : ""}<b>${esc(p.c.localId)}</b>${p.v !== "normal" ? ` <span class="vtag v-${p.v}">${VSHORT[p.v]}</span>` : ""}${has ? "" : `<br>${esc(p.c.name)}`}</span>
+          </button>`; }).join("")}</div></section>`;
+    // opslag: første side alene til højre, hvis permen starter på en højreside
+    const spreads = [];
+    if (PLAN.spread) {
+      let i = 0;
+      if (PLAN.right && pages.length) { spreads.push([null, 0]); i = 1; }
+      for (; i < pages.length; i += 2) spreads.push([i, i + 1 < pages.length ? i + 1 : null]);
+    }
+    el.innerHTML = `
+      <div class="plan-bar hrow">
+        <label>Lommer pr. side <select id="plan-per">${Object.keys(GRIDS).map(k => `<option value="${k}"${+k === PLAN.per ? " selected" : ""}>${k} (${GRIDS[k][0]}×${GRIDS[k][1]})</option>`).join("")}</select></label>
+        <label class="chk"><input type="checkbox" id="plan-spread"${PLAN.spread ? " checked" : ""}> Vis som opslag</label>
+        <label class="chk"><input type="checkbox" id="plan-right"${PLAN.right ? " checked" : ""}${PLAN.spread ? "" : " disabled"}> Første side er en højreside</label>
+        <span class="grow"></span>
+        <button class="btn small" id="plan-print">Print tjekliste</button>
+      </div>
+      <p class="plan-sum">${pockets.length} lommer på ${pages.length} ${pages.length === 1 ? "side" : "sider"}${PLAN.spread ? ` (${spreads.length} opslag)` : ""} · ${owned} fyldt, ${pockets.length - owned} tomme${firstGap >= 0 ? ` · første tomme lomme: ${where(firstGap)}` : ""}</p>
+      <div class="plan-pages">${PLAN.spread
+        ? spreads.map(([a, b]) => `<div class="plan-spread">${a == null ? `<div class="plan-page blank"></div>` : pageHtml(pages[a], a)}${b == null ? `<div class="plan-page blank"></div>` : pageHtml(pages[b], b)}</div>`).join("")
+        : pages.map((pg, n) => pageHtml(pg, n)).join("")}</div>
+      <p class="hint">Rækkefølgen følger ${multi ? "sættenes udgivelse og kortnumrene" : "kortnumrene"}, med en lomme pr. version (${slotsLabel()}). Vælg versioner med knapperne ovenfor. Tryk på en lomme for at se kortet.</p>`;
+    const save = () => { store.set("kp-plan", PLAN); content(); };
+    $("#plan-per").onchange = e => { PLAN.per = +e.target.value; save(); };
+    $("#plan-spread").onchange = e => { PLAN.spread = e.target.checked; save(); };
+    $("#plan-right").onchange = e => { PLAN.right = e.target.checked; save(); };
+    $("#plan-print").onclick = () => window.print();
+    el.querySelectorAll("[data-pid]").forEach(b => b.onclick = () => detail(b.dataset.pid));
+  };
+  const slotsLabel = () => ["normal", ...["firstEdition", "shadowless", "reverse"].filter(v => G.vs[v])].map(v => VLABEL[v].toLowerCase()).join(", ");
+
   const content = () => {
     const el = $("#g-content"); if (!el) return;
+    document.body.classList.toggle("printing-plan", G.view === "plan");
+    if (G.view === "plan") return renderPlan(el);
     if (G.view === "list") {
       // én række pr. manglende version
       const list = sortList(search(cards).flatMap(c => missingSlots(c.id).map(v => ({ ...c, _v: v }))),
