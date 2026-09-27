@@ -2,8 +2,8 @@
 // - Appens egne filer: netværk først (så opdateringer altid kommer med), cache som reserve offline.
 // - Kortbilleder, skrifttyper og Supabase-biblioteket: cache først (de ændrer sig ikke).
 // - Data fra Supabase og TCGdex' API caches ikke her.
-const VERSION = "kp-v2";
-const SHELL = ["./", "./index.html", "./app.js", "./parse.js", "./suggest.js", "./names.js", "./style.css", "./manifest.webmanifest", "./icons/icon-192.png"];
+const VERSION = "kp-v3";
+const SHELL = ["./", "./index.html", "./app.js", "./parse.js", "./suggest.js", "./names.js", "./scan.js", "./scanmatch.js", "./style.css", "./manifest.webmanifest", "./icons/icon-192.png"];
 const IMG_CACHE = "kp-img";
 const IMG_MAX = 800;
 

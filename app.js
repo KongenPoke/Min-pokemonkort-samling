@@ -212,12 +212,14 @@ async function render() {
   if (!S.me) { try { await loadMe(); } catch (e) { setStatus("Kunne ikke hente din profil: " + e.message, true); return; } }
   $("#nav").hidden = false; $("#logout").hidden = false; $("#who").hidden = false; $("#who").textContent = S.me.username;
   const r = route();
-  document.querySelectorAll("[data-nav]").forEach(a => a.setAttribute("aria-current", a.dataset.nav === r.page ? "page" : "false"));
+  const navPage = r.page === "scan" ? "tilfoej" : r.page;
+  document.querySelectorAll("[data-nav]").forEach(a => a.setAttribute("aria-current", a.dataset.nav === navPage ? "page" : "false"));
   if (!S.sets.length) await loadSets();
   try {
     if (r.page === "saet") return await renderSet(r.a, r.b);
     if (r.page === "pokemon") return r.a ? await renderPokemon(r.a, r.b) : await renderPokemonHub();
     if (r.page === "tilfoej") return renderAdd();
+    if (r.page === "scan") return await renderScan();
     if (r.page === "venner") return await renderFriends();
     if (r.page === "konto") return renderAccount();
     return await renderOverview(r.a);
@@ -456,11 +458,22 @@ async function renderFriends() {
       </a>`).join("")}</div>`;
 }
 
+// ---------------- kortscanner ----------------
+async function renderScan() {
+  const { mountScanner } = await import("./scan.js");
+  mountScanner($("#app"), { esc, fmt, imgUrl, S, sb, getSet, loadPrices, variantsOf, cardPrice, saveQty, scheduleSnapshot, decorate, VLABEL, setStatus });
+}
+
 // ---------------- hurtig registrering ----------------
 function renderAdd() {
   let mode = store.get("kp-addmode", "add"), parsed = null;
   $("#app").innerHTML = `
-    <div class="pagehead"><h1>Hurtig registrering</h1></div>
+    <div class="pagehead"><h1>Tilføj kort</h1></div>
+    <a class="scan-cta" href="#/scan">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><rect x="8.5" y="7" width="7" height="10" rx="1"/></svg>
+      <span><b>Scan med kameraet</b><br><small>Hold kortet op, så finder appen det selv</small></span>
+    </a>
+    <p class="label" style="margin-top:18px">Eller skriv numrene</p>
     <div class="grid2">
       <section class="stack">
         <div class="panel stack">

@@ -283,3 +283,30 @@ nav .short{display:none}
 .combo-list li[aria-selected="true"],.combo-list li:hover{background:var(--pocket)}
 .combo-list .n{font-weight:600}
 .combo-list .m{font-size:12px;color:var(--muted);font-family:var(--mono);white-space:nowrap}
+
+/* kortscanner */
+.scan-cta{display:flex;align-items:center;gap:14px;text-decoration:none;background:var(--accent);color:var(--accent-ink);border-radius:14px;padding:16px 18px;max-width:520px}
+.scan-cta svg{width:40px;height:40px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.scan-cta b{font-size:17px}
+.scan-cta small{opacity:.9}
+.scan-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}
+@media (max-width:820px){.scan-grid{grid-template-columns:1fr}}
+.scan-cam{position:relative;aspect-ratio:3/4;max-height:70vh;width:100%;background:#0b0e14;border-radius:14px;overflow:hidden}
+.scan-cam video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.scan-frame{position:absolute;left:50%;top:50%;height:86%;aspect-ratio:63/88;max-width:92%;transform:translate(-50%,-50%);border:3px solid rgba(255,255,255,.9);border-radius:14px;box-shadow:0 0 0 100vmax rgba(0,0,0,.38);pointer-events:none}
+.scan-frame::after{content:"";position:absolute;left:0;right:0;bottom:0;height:16%;border-top:2px dashed rgba(255,255,255,.75);background:rgba(255,255,255,.08)}
+.scan-hint{position:absolute;top:8px;left:0;right:0;text-align:center;color:#fff;font-size:13px;font-weight:600;text-shadow:0 1px 3px rgba(0,0,0,.7)}
+.scan-num{position:absolute;bottom:17%;left:0;right:0;text-align:center;color:#fff;font-size:12px;text-shadow:0 1px 3px rgba(0,0,0,.7)}
+.scan-off{position:absolute;inset:0;display:grid;place-items:center;padding:24px;text-align:center;color:#fff;font-size:14px;background:#0b0e14}
+.scan-btn{font-size:16px;padding:12px 22px}
+#sc-msg.err{color:var(--accent)}
+.scan-card{display:grid;grid-template-columns:150px 1fr;gap:14px;align-items:start}
+.scan-card img{width:100%;border-radius:8px}
+.scan-card h3{font-size:20px}
+@media (max-width:420px){.scan-card{grid-template-columns:110px 1fr}}
+.scan-alts{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px}
+.scan-alt{display:flex;flex-direction:column;gap:3px;text-align:left;background:var(--pocket);border:1px solid transparent;border-radius:10px;padding:6px;cursor:pointer;font:inherit;color:inherit}
+.scan-alt:hover{border-color:var(--line)}
+.scan-alt img{width:100%;border-radius:5px}
+.scan-alt span{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scan-alt small{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
