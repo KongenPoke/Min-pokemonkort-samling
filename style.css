@@ -233,3 +233,6 @@ dialog{max-width:min(640px,calc(100vw - 32px))}
 .pc-track{height:14px;background:transparent;display:block}
 .pc-track i{display:block;height:100%;background:var(--s1);border-radius:0 4px 4px 0}
 .pc-bv{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600;min-width:72px;text-align:right}
+.vtag.v-firstEdition{background:#1b1f2a;color:#fff}
+.vtag.v-shadowless{background:#c9ced6;color:#1b1f2a}
+@media (prefers-color-scheme: dark){.vtag.v-firstEdition{background:#e7ecf3;color:#10141c}}
