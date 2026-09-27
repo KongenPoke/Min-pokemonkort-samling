@@ -393,12 +393,26 @@ function renderAccount() {
         <p class="msg" id="inv-msg"></p>
       </div>
       <div class="panel">
+        <p class="label">App på telefonen</p>
+        ${matchMedia("(display-mode: standalone)").matches ? `<p class="hint" style="margin:0">Du bruger Kortpermen som app.</p>` : `
+        <p class="hint" style="margin-top:0">Læg Kortpermen på hjemmeskærmen, så åbner den som en app i fuld skærm.</p>
+        ${deferredInstall ? `<button class="btn primary small" id="acc-install">Installér app</button>` : `
+        <ol class="install-steps">
+          <li><b>iPhone (Safari):</b> tryk på Del-knappen <span aria-hidden="true">⬆︎</span> og vælg <b>Føj til hjemmeskærm</b>.</li>
+          <li><b>Android (Chrome):</b> tryk på menuen ⋮ og vælg <b>Installér app</b> eller <b>Føj til startskærm</b>.</li>
+        </ol>`}`}
+      </div>
+      <div class="panel">
         <p class="label">Oplysninger</p>
         <dl class="kv"><dt>Brugernavn</dt><dd>${esc(S.me.username)}</dd><dt>E-mail</dt><dd>${esc(S.session.user.email)}</dd>
           <dt>Oprettet</dt><dd>${new Date(S.me.created_at).toLocaleDateString("da-DK")}</dd></dl>
+        <div style="height:12px"></div>
+        <button class="btn small" id="acc-logout">Log ud</button>
       </div>
       </section>
     </div>`;
+  $("#acc-logout").onclick = () => sb.auth.signOut();
+  if ($("#acc-install")) $("#acc-install").onclick = promptInstall;
   sb.rpc("get_invite_code").then(({ data }) => {
     const code = data || "(ingen aktiv kode)";
     $("#inv-code").textContent = code;
@@ -1016,6 +1030,21 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
   }).catch(() => {});
   refresh(false);
 }
+
+// ---------------- app (PWA) ----------------
+let deferredInstall = null;
+async function promptInstall() {
+  if (!deferredInstall) return;
+  deferredInstall.prompt();
+  await deferredInstall.userChoice.catch(() => {});
+  deferredInstall = null; $("#install").hidden = true;
+  if (route().page === "konto") render();
+}
+window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); deferredInstall = e; $("#install").hidden = false; });
+window.addEventListener("appinstalled", () => { deferredInstall = null; $("#install").hidden = true; });
+$("#install").onclick = promptInstall;
+window.addEventListener("offline", () => setStatus("Du er offline. Ændringer kan ikke gemmes, før du er online igen.", true));
+window.addEventListener("online", () => { setStatus(""); render(); });
 
 // ---------------- opstart ----------------
 const setCur = c => { S.currency = c; store.set("kp-currency", c);

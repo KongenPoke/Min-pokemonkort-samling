@@ -1,0 +1,17 @@
+{
+  "name": "Kortpermen",
+  "short_name": "Kortpermen",
+  "description": "Hold styr på dine Pokémon-kort, se hvad de er værd, og se dine venners samlinger.",
+  "lang": "da",
+  "start_url": "./#/samling",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#E9EDF2",
+  "theme_color": "#C8322D",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
