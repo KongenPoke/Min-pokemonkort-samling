@@ -240,3 +240,4 @@ dialog{max-width:min(640px,calc(100vw - 32px))}
 .vfix summary{cursor:pointer;color:var(--muted);font-weight:600}
 .vfix .hrow{margin-top:6px}
 .vfix .seg button{padding:4px 10px;font-size:13px}
+code.invite{font-size:16px;font-weight:700;letter-spacing:.06em;padding:6px 10px;user-select:all}

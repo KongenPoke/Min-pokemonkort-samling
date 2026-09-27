@@ -237,6 +237,7 @@ function renderAuth() {
           <button data-mode="signup" aria-pressed="${mode === "signup"}">Opret bruger</button>
         </div>
         <form class="panel" id="authform">
+          ${mode === "signup" ? `<label>Invitationskode <input type="text" id="f-invite" required autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Få den af en ven, der allerede er med"></label>` : ""}
           ${mode === "signup" ? `<label>Brugernavn <input type="text" id="f-user" required minlength="3" maxlength="24" pattern="[A-Za-z0-9_æøåÆØÅ]{3,24}" autocomplete="username"><small class="hint" style="margin:0">3–24 tegn: bogstaver, tal og _. Dine venner ser det.</small></label>` : ""}
           <label>E-mail <input type="email" id="f-email" required autocomplete="email"></label>
           <label>Adgangskode <input type="password" id="f-pass" required minlength="8" autocomplete="${mode === "signup" ? "new-password" : "current-password"}"></label>
@@ -262,9 +263,12 @@ function renderAuth() {
         const { error } = await sb.auth.signInWithPassword({ email, password });
         if (error) { msg.className = "msg err"; msg.textContent = error.message === "Invalid login credentials" ? "Forkert e-mail eller adgangskode." : error.message; }
       } else {
-        const username = $("#f-user").value.trim();
-        const { data, error } = await sb.auth.signUp({ email, password, options: { data: { username }, emailRedirectTo: location.origin + location.pathname } });
-        if (error) { msg.className = "msg err"; msg.textContent = /database error/i.test(error.message) ? "Brugernavnet er taget eller ugyldigt. Prøv et andet." : error.message; }
+        const username = $("#f-user").value.trim(), invite = $("#f-invite").value.trim();
+        const check = await sb.rpc("check_signup", { invite_code: invite, new_username: username });
+        const why = { invalid_invite: "Invitationskoden er forkert. Spørg den ven, der inviterede dig.", invalid_username: "Brugernavnet skal være 3–24 tegn: bogstaver, tal og _.", username_taken: "Brugernavnet er taget. Prøv et andet." }[check.data];
+        if (why) { msg.className = "msg err"; msg.textContent = why; return; }
+        const { data, error } = await sb.auth.signUp({ email, password, options: { data: { username, invite }, emailRedirectTo: location.origin + location.pathname } });
+        if (error) { msg.className = "msg err"; msg.textContent = /database error/i.test(error.message) ? "Kunne ikke oprette brugeren. Tjek invitationskoden og brugernavnet." : error.message; }
         else if (!data.session) { msg.textContent = "Tjek din e-mail og klik på linket for at bekræfte din bruger. Så kan du logge ind."; }
       }
     };
@@ -381,12 +385,29 @@ function renderAccount() {
         <button class="btn primary" type="submit">Gem ny adgangskode</button>
         <p class="msg" id="pw-msg"></p>
       </form>
-      <section class="panel">
+      <section class="stack">
+      <div class="panel">
+        <p class="label">Invitér en ven</p>
+        <p class="hint" style="margin-top:0">Nye brugere skal bruge denne kode for at oprette sig. Send den sammen med adressen til siden.</p>
+        <div class="hrow"><code class="invite" id="inv-code">…</code><button class="btn small" id="inv-copy">Kopiér invitation</button></div>
+        <p class="msg" id="inv-msg"></p>
+      </div>
+      <div class="panel">
         <p class="label">Oplysninger</p>
         <dl class="kv"><dt>Brugernavn</dt><dd>${esc(S.me.username)}</dd><dt>E-mail</dt><dd>${esc(S.session.user.email)}</dd>
           <dt>Oprettet</dt><dd>${new Date(S.me.created_at).toLocaleDateString("da-DK")}</dd></dl>
+      </div>
       </section>
     </div>`;
+  sb.rpc("get_invite_code").then(({ data }) => {
+    const code = data || "(ingen aktiv kode)";
+    $("#inv-code").textContent = code;
+    $("#inv-copy").onclick = async () => {
+      const text = `Kom med i Kortpermen og hold styr på dine Pokémon-kort: ${location.origin + location.pathname}\nInvitationskode: ${code}`;
+      try { await navigator.clipboard.writeText(text); $("#inv-msg").textContent = "Invitationen er kopieret. Indsæt den i en besked til din ven."; }
+      catch { const r = document.createRange(); r.selectNodeContents($("#inv-code")); getSelection().removeAllRanges(); getSelection().addRange(r); $("#inv-msg").textContent = "Koden er markeret. Tryk Ctrl+C for at kopiere."; }
+    };
+  });
   $("#pw-form").onsubmit = async e => {
     e.preventDefault();
     const msg = $("#pw-msg"), a = $("#pw1").value, b = $("#pw2").value;
@@ -413,7 +434,7 @@ async function renderFriends() {
   if (token !== S.token) return;
   $("#app").innerHTML = `
     <div class="pagehead"><h1>Venner</h1></div>
-    <p class="empty" style="margin-top:0">Alle med en bruger på siden. Send adressen til dine venner, så de kan oprette sig.</p>
+    <p class="empty" style="margin-top:0">Alle med en bruger på siden. Du finder invitationskoden til nye venner under <a href="#/konto">Min konto</a>.</p>
     <div class="friends">${data.map(u => `
       <a href="#/samling${u.id === S.me.id ? "" : "/" + encodeURIComponent(u.username)}">
         <span class="n">${esc(u.username)}${u.id === S.me.id ? `<span class="tag">dig</span>` : ""}</span>
