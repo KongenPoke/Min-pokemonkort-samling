@@ -30,6 +30,7 @@ const S = {
   grid: { view: "binder", filter: "all", sort: "num", q: "", vs: { reverse: true, firstEdition: true, shadowless: true, ...store.get("kp-vs", {}) } },
   addText: store.get("kp-addtext", ""),
   chartRange: store.get("kp-range", "90"),
+  overrides: {},                             // card_id -> { reverse: true/false, ... }
 };
 const fmt = eur => {
   if (eur == null || isNaN(eur)) return "–";
@@ -37,29 +38,50 @@ const fmt = eur => {
   return new Intl.NumberFormat("da-DK", { style: "currency", currency: S.currency, maximumFractionDigits: 2 }).format(v);
 };
 const firstPos = (...xs) => { for (const x of xs) if (typeof x === "number" && x > 0) return x; return null; };
-// Cardmarkets "-holo"-felter er reverse holo-prisen; normal/holo-kortet selv står i trend/avg/low
-// 1. udgave og shadowless har ingen separat pris i Cardmarkets prisguide
-const NO_PRICE = new Set(["firstEdition", "shadowless"]);
+// Cardmarkets "-holo"-felter er reverse holo-prisen; normal/holo-kortet selv står i trend/avg/low.
+// De detaljerede varianter fra TCGdex (vd) har egne Cardmarket-produkter, fx shadowless.
+const NO_PRICE = new Set(["firstEdition", "shadowless"]);   // ingen felter i den almindelige prisguide
+const vdOf = id => S.prices[id]?.vd || [];
+const vdFind = (id, v) => {
+  const vd = vdOf(id);
+  if (v === "shadowless") return vd.find(x => x.s === "shadowless" && !x.st.includes("1st-edition"));
+  if (v === "firstEdition") return vd.find(x => x.st.includes("1st-edition"));
+  if (v === "reverse") return vd.find(x => x.t === "reverse");
+  return vd.find(x => !x.st.length && x.s !== "shadowless" && x.t !== "reverse");
+};
+const baseProduct = id => vdFind(id, "normal")?.id ?? S.prices[id]?.cm?.idProduct ?? null;
+// 1. udgave/shadowless får kun pris, hvis versionen er sit eget produkt på Cardmarket
+const ownProductPrice = (id, v) => {
+  const x = vdFind(id, v); if (!x || !x.id || x.id === baseProduct(id)) return null;
+  if (v === "firstEdition" && x.id === vdFind(id, "shadowless")?.id) return null;   // samme vare som shadowless
+  return firstPos(x.tr, x.lo);
+};
 const priceFromCm = (cm, v = "normal") => !cm || NO_PRICE.has(v) ? null : v === "reverse"
   ? firstPos(cm["trend-holo"], cm["avg-holo"], cm["low-holo"])
   : firstPos(cm.trend, cm.avg, cm.low, cm["trend-holo"], cm["avg-holo"], cm["low-holo"]);
 const priceFromRow = (r, v = "normal") => !r || NO_PRICE.has(v) ? null : v === "reverse"
   ? firstPos(+r.trend_holo, +r.low_holo)
   : firstPos(+r.trend, +r.low, +r.trend_holo, +r.low_holo);
-const cardPrice = (id, v = "normal") => priceFromCm(S.prices[id]?.cm, v);
-const hasReverse = id => S.prices[id]?.variants?.reverse === true;
+const cardPrice = (id, v = "normal") => NO_PRICE.has(v) ? ownProductPrice(id, v) : priceFromCm(S.prices[id]?.cm, v);
 const VLABEL = { normal: "Normal", reverse: "Reverse", firstEdition: "1. udgave", shadowless: "Shadowless" };
 const VSHORT = { normal: "N", reverse: "R", firstEdition: "1.", shadowless: "S" };
 const VORDER = ["firstEdition", "shadowless", "normal", "reverse"];
-// Alle versioner et kort findes i. Shadowless findes kun i Base Set (1999).
-const variantsOf = id => {
-  const v = S.prices[id]?.variants || {}, out = [];
-  if (v.firstEdition) out.push("firstEdition");
-  if (setIdOf(id) === "base1") out.push("shadowless");
-  out.push("normal");
-  if (v.reverse) out.push("reverse");
+// Sæt fra før reverse holo fandtes (WOTC) og småserier uden reverse
+const PRE_REVERSE = /^(base[1-5]|basep|gym\d|neo\d|si1|wp|tk-|mcd|\d{4})/;
+// Hvilke versioner et kort findes i, ud fra TCGdex. Reverse tæller også, hvis Cardmarket har en
+// reverse-pris for et ikke-holo kort (TCGdex mangler reverse for mange ældre sæt).
+const autoVariants = id => {
+  const e = S.prices[id] || {}, v = e.variants || {}, vd = e.vd || [], cm = e.cm || {}, sid = setIdOf(id), out = new Set();
+  if (v.firstEdition || vd.some(x => x.st.includes("1st-edition"))) out.add("firstEdition");
+  if (sid === "base1" || vd.some(x => x.s === "shadowless")) out.add("shadowless");
+  const holoBase = v.holo && !v.normal;
+  if (v.reverse || vd.some(x => x.t === "reverse") || (!PRE_REVERSE.test(sid) && !holoBase && firstPos(cm["trend-holo"], cm["avg30-holo"]))) out.add("reverse");
   return out;
 };
+// + fælles rettelser fra brugerne (variant_overrides)
+const variantsOf = id => { const auto = autoVariants(id), ov = S.overrides[id] || {};
+  return VORDER.filter(v => v === "normal" || (v in ov ? ov[v] : auto.has(v))); };
+const hasReverse = id => variantsOf(id).includes("reverse");
 const setStatus = (msg, err) => { const s = $("#status"); s.textContent = msg || ""; s.classList.toggle("err", !!err); };
 const numKey = n => { const m = String(n).match(/^(\D*)(\d+)(.*)$/); return m ? [m[1], +m[2], m[3]] : [String(n), 0, ""]; };
 const cmpNum = (a, b) => { const x = numKey(a.localId), y = numKey(b.localId); return x[0].localeCompare(y[0]) || x[1] - y[1] || x[2].localeCompare(y[2]); };
@@ -67,6 +89,8 @@ const cmpCard = (a, b) => (a._order - b._order) || cmpNum(a, b);   // sæt i udg
 const imgUrl = (c, q = "low") => c?.image ? `${c.image}/${q}.webp` : null;
 const cmSlug = s => String(s).normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[&'’:.,!?()]/g, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 const cmLink = (name, setName) => `https://www.cardmarket.com/en/Pokemon/Products/Singles/${cmSlug(setName)}?searchString=${encodeURIComponent(name)}&language=1`;
+const cmProduct = pid => `https://www.cardmarket.com/en/Pokemon/Products?idProduct=${pid}&language=1`;
+const cmFor = (c, v = "normal") => { const pid = vdFind(c.id, v)?.id || baseProduct(c.id); return pid ? cmProduct(pid) : cmLink(c.name, c._setName); };
 const cmSearch = name => `https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=${encodeURIComponent(name)}&language=1`;
 const setIdOf = cardId => cardId.replace(/-[^-]+$/, "");
 const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -131,14 +155,16 @@ async function getPokemonCards(name) {
 }
 async function loadPrices(cards, force, onProgress) {
   const token = S.token;
-  const todo = cards.filter(c => force || !S.prices[c.id] || !("variants" in S.prices[c.id]) || Date.now() - S.prices[c.id].t > PRICE_TTL);
+  const todo = cards.filter(c => force || !S.prices[c.id] || !("vd" in S.prices[c.id]) || Date.now() - S.prices[c.id].t > PRICE_TTL);
   let i = 0, done = 0, failed = 0;
   const worker = async () => {
     while (i < todo.length && token === S.token) {
       const c = todo[i++];
       try {
         const d = await getJSON(`${API}/cards/${encodeURIComponent(c.id)}`);
-        S.prices[c.id] = { t: Date.now(), cm: d.pricing?.cardmarket || null, rarity: d.rarity || null, variants: d.variants || null };
+        const vd = (d.variants_detailed || []).map(x => { const m = x.pricing?.cardmarket;
+          return { t: x.type, s: x.subtype || null, st: x.stamp || [], id: m?.idProduct ?? x.thirdParty?.cardmarket ?? null, tr: m?.trend ?? null, lo: m?.low ?? null }; });
+        S.prices[c.id] = { t: Date.now(), cm: d.pricing?.cardmarket || null, rarity: d.rarity || null, variants: d.variants || null, vd };
       } catch { failed++; }
       done++;
       if (done % 12 === 0 || done === todo.length) { store.set("kp-prices", S.prices); if (token === S.token) onProgress?.(done, todo.length); }
@@ -824,7 +850,7 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
           ${multi ? `<td>${esc(c._setName)}</td>` : ""}<td class="num">${esc(c.localId)}</td><td>${esc(c.name)}${other ? ` <span class="vtag v-${c._v}">${VSHORT[c._v]}</span>` : ""}</td><td>${esc(S.prices[c.id]?.rarity || "")}</td>
           <td class="num">${fmt(NO_PRICE.has(c._v) ? null : rev ? cm?.["low-holo"] : firstPos(cm?.low, cm?.["low-holo"]))}</td><td class="num"><b>${fmt(p)}</b></td>
           <td class="num">${fmt(NO_PRICE.has(c._v) ? null : rev ? cm?.["avg30-holo"] : firstPos(cm?.avg30, cm?.["avg30-holo"]))}</td>
-          <td><a href="${esc(cmLink(c.name, c._setName))}" target="_blank" rel="noopener">Cardmarket ↗</a></td>
+          <td><a href="${esc(cmFor(c, c._v))}" target="_blank" rel="noopener">Cardmarket ↗</a></td>
           ${mine ? `<td><button class="btn small" data-have="${esc(c.id)}" data-v="${c._v}">Har den</button></td>` : ""}</tr>`; }).join("");
       const cols = 8 + (multi ? 1 : 0) + (mine ? 1 : 0);
       el.innerHTML = list.length ? `<div class="tablewrap"><table>
@@ -872,7 +898,7 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
   function detail(id) {
     const c = cards.find(x => x.id === id); if (!c) return;
     const dlg = $("#dlg");
-    let hist = null;
+    let hist = null, fixOpen = false;
     const paintChart = () => {
       const el = dlg.querySelector("#dlg-chart"); if (!el || !hist) return;
       renderPriceChart(el, { history: hist, cm: S.prices[id]?.cm, reverse: hasReverse(id), range: S.chartRange,
@@ -886,24 +912,33 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
         row("Reverse: trend", "trend-holo") + row("Reverse: laveste", "low-holo") + row("Reverse: snit 30 d.", "avg30-holo");
       const off = context === "set" ? officialCount : S.setsById[c._setId]?.cardCount?.official;
       const vs = variantsOf(id);
-      const exists = vars ? [vars.firstEdition && "1. udgave", setIdOf(id) === "base1" && "shadowless", vars.normal && (setIdOf(id) === "base1" ? "unlimited" : "normal"), vars.holo && "holo", vars.reverse && "reverse holo"].filter(Boolean).join(", ") : "";
+      const exists = S.prices[id] ? vs.map(v => v === "normal" ? (vars?.holo && !vars?.normal ? "holo" : setIdOf(id) === "base1" ? "unlimited" : "normal") : VLABEL[v].toLowerCase()).join(", ") : "";
+      const own = vs.filter(v => NO_PRICE.has(v) && cardPrice(id, v)).map(v => `<dt>${VLABEL[v]}: trend</dt><dd>${fmt(cardPrice(id, v))}</dd>`).join("");
       dlg.innerHTML = `<button class="close" aria-label="Luk">×</button><div class="dlg">
         ${c.image ? `<img src="${esc(imgUrl(c, "high"))}" alt="${esc(c.name)}">` : "<div></div>"}
         <div><h3>${esc(c.name)}</h3>
           <div class="meta">${esc(c._setName)} · ${esc(c.localId)}/${off ?? "?"}${S.prices[id]?.rarity ? " · " + esc(S.prices[id].rarity) : ""}${exists ? `<br>Findes som: ${esc(exists)}` : ""}</div>
-          <dl class="pl">${rows || "<dt>Ingen Cardmarket-pris for dette kort</dt><dd></dd>"}</dl>
+          <dl class="pl">${rows + own || "<dt>Ingen Cardmarket-pris for dette kort</dt><dd></dd>"}</dl>
           ${mine ? `<div class="vctl">${vs.map(v => `<div class="hrow"><span class="vname">${VLABEL[v]}</span><span class="grow"></span>
               <button class="btn small" data-dv="${v}" data-dq="-1" ${q(id, v) ? "" : "disabled"} aria-label="Fjern en ${VLABEL[v]}">−</button>
               <b class="vcount">${q(id, v)}</b>
               <button class="btn small primary" data-dv="${v}" data-dq="1" aria-label="Tilføj en ${VLABEL[v]}">+</button></div>`).join("")}</div>`
                  : `<p class="meta">${vs.map(v => `${VLABEL[v]}: ${q(id, v) ? "har " + q(id, v) : "mangler"}`).join(" · ")}</p>`}
           <div class="acts">
-            <a class="btn" href="${esc(cmLink(c.name, c._setName))}" target="_blank" rel="noopener">Se kortet på Cardmarket ↗</a>
+            <a class="btn" href="${esc(cmFor(c))}" target="_blank" rel="noopener">Se kortet på Cardmarket ↗</a>
             <a class="btn" href="${esc(cmSearch(c.name))}" target="_blank" rel="noopener">Søg i alle sæt ↗</a>
             ${multi ? `<a class="btn" href="#/saet/${encodeURIComponent(c._setId)}">Åbn sættet</a>` : ""}
           </div>
-          <p class="hint">Priser: Cardmarkets prisguide via TCGdex, alle sprog samlet. Linket viser engelske kort.</p></div></div>
+          <p class="hint">Priser: Cardmarkets prisguide via TCGdex, alle sprog samlet. Linket viser engelske kort.</p>
+          <details class="vfix"${fixOpen ? " open" : ""}><summary>Er versionerne forkerte?</summary>
+            <p class="hint">Oplysningerne kommer fra TCGdex og har huller. Retter du dem her, gælder rettelsen for alle på siden.</p>
+            ${["reverse", "firstEdition", "shadowless"].map(v => { const has = vs.includes(v), ov = S.overrides[id]?.[v];
+              return `<div class="hrow"><span class="vname">${VLABEL[v]}</span><span class="grow"></span>
+                ${ov !== undefined ? `<button class="linkbtn" data-ovreset="${v}">Nulstil</button>` : ""}
+                <div class="seg"><button data-ov="${v}" data-val="1" aria-pressed="${has}">Findes</button><button data-ov="${v}" data-val="0" aria-pressed="${!has}">Findes ikke</button></div></div>`; }).join("")}
+          </details></div></div>
         <div class="dlg-chart" id="dlg-chart"><p class="label">Prisudvikling</p><p class="empty">Henter prishistorik…</p></div>`;
+      dlg.querySelector(".vfix").ontoggle = e => { fixOpen = e.target.open; };
       paintChart();
     };
     draw();
@@ -912,6 +947,17 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
     dlg.onclick = async e => {
       if (e.target === dlg || e.target.closest(".close")) return dlg.close();
       if (e.target.closest("a[href^='#']")) return dlg.close();
+      const ovb = e.target.closest("[data-ov],[data-ovreset]");
+      if (ovb) {
+        fixOpen = true;
+        const v = ovb.dataset.ov || ovb.dataset.ovreset, reset = !!ovb.dataset.ovreset, present = ovb.dataset.val === "1";
+        const res = reset
+          ? await sb.from("variant_overrides").delete().eq("card_id", id).eq("variant", v)
+          : await sb.from("variant_overrides").upsert({ card_id: id, variant: v, present, user_id: S.me.id, updated_at: new Date().toISOString() });
+        if (res.error) { setStatus("Kunne ikke gemme rettelsen: " + res.error.message, true); return; }
+        if (reset) delete S.overrides[id]?.[v]; else (S.overrides[id] ||= {})[v] = present;
+        draw(); all(); return;
+      }
       const b = e.target.closest("[data-dq]"); if (b) { const v = b.dataset.dv; await setQty(id, v, q(id, v) + +b.dataset.dq); draw(); }
     };
     dlg.showModal();
@@ -943,6 +989,10 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
   $("#g-refresh").onclick = () => refresh(true);
   onReady?.();
   all();
+  fetchIn(() => sb.from("variant_overrides").select("card_id,variant,present"), cards.map(c => c.id)).then(rows => {
+    for (const r of rows) (S.overrides[r.card_id] ||= {})[r.variant] = r.present;
+    if (token === S.token && rows.length) all();
+  }).catch(() => {});
   refresh(false);
 }
 
