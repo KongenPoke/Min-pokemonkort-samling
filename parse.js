@@ -22,22 +22,25 @@ export const SET_CODES = {
   // XY
   XY: "xy1", FLF: "xy2", FFI: "xy3", PHF: "xy4", PRC: "xy5", ROS: "xy6", AOR: "xy7", BKT: "xy8", BKP: "xy9",
   GEN: "g1", FCO: "xy10", STS: "xy11", EVO: "xy12",
+  // WOTC (1. udgave og shadowless)
+  BS: "base1", JU: "base2", FO: "base3", B2: "base4", TR: "base5", LC: "base6",
+  GH: "gym1", GC: "gym2", N1: "neo1", N2: "neo2", N3: "neo3", N4: "neo4",
 };
 
 // "TG05" og "TG5" er det samme kort; "001" og "1" også
 export const normNo = s => String(s).trim().toUpperCase().replace(/^([A-Z]*)0*(\d+)([A-Z]*)$/, "$1$2$3");
 
 // "1, 4, 25x2, 12-18, TG01-TG03, 4r, 25rx2" -> [{ref:"1",qty:1,variant:"normal"}, ...] + ugyldige stykker
-// Et "r" efter nummeret betyder reverse holo.
+// Bogstav efter nummeret: r = reverse holo, e = 1. udgave, s = shadowless.
 export function expandTokens(rest) {
   const refs = [], bad = [];
-  const clean = String(rest).replace(/\s*[x×*]\s*(\d+)\b/gi, "x$1").replace(/(\d)\s+r\b/gi, "$1r");
+  const clean = String(rest).replace(/(\d)\s+([res])\b/gi, "$1$2").replace(/\s*[x×*]\s*(\d+)\b/gi, "x$1");
   for (let tok of clean.split(/[,;\s]+/).filter(Boolean)) {
     let qty = 1, variant = "normal";
     const q = tok.match(/^(.+?)x(\d+)$/i);
     if (q) { tok = q[1]; qty = Math.max(1, Math.min(99, +q[2])); }
-    const rv = tok.match(/^(.*\d)r$/i);
-    if (rv) { tok = rv[1]; variant = "reverse"; }
+    const rv = tok.match(/^(.*\d)([res])$/i);
+    if (rv) { tok = rv[1]; variant = { r: "reverse", e: "firstEdition", s: "shadowless" }[rv[2].toLowerCase()]; }
     const r = tok.match(/^([A-Za-z]*)(\d+)-([A-Za-z]*)(\d+)$/);
     if (r) {
       const [, p1, a, p2, b] = r, from = +a, to = +b;

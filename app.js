@@ -27,7 +27,7 @@ const S = {
   currency: store.get("kp-currency", "EUR"),
   prices: store.get("kp-prices", {}),       // card_id -> {t, cm, rarity, variants}
   token: 0,                                  // skifter ved hver visning, så gamle hentninger stopper
-  grid: { view: "binder", filter: "all", sort: "num", q: "", rev: store.get("kp-rev", true) },
+  grid: { view: "binder", filter: "all", sort: "num", q: "", vs: { reverse: true, firstEdition: true, shadowless: true, ...store.get("kp-vs", {}) } },
   addText: store.get("kp-addtext", ""),
   chartRange: store.get("kp-range", "90"),
 };
@@ -38,15 +38,28 @@ const fmt = eur => {
 };
 const firstPos = (...xs) => { for (const x of xs) if (typeof x === "number" && x > 0) return x; return null; };
 // Cardmarkets "-holo"-felter er reverse holo-prisen; normal/holo-kortet selv står i trend/avg/low
-const priceFromCm = (cm, v = "normal") => !cm ? null : v === "reverse"
+// 1. udgave og shadowless har ingen separat pris i Cardmarkets prisguide
+const NO_PRICE = new Set(["firstEdition", "shadowless"]);
+const priceFromCm = (cm, v = "normal") => !cm || NO_PRICE.has(v) ? null : v === "reverse"
   ? firstPos(cm["trend-holo"], cm["avg-holo"], cm["low-holo"])
   : firstPos(cm.trend, cm.avg, cm.low, cm["trend-holo"], cm["avg-holo"], cm["low-holo"]);
-const priceFromRow = (r, v = "normal") => !r ? null : v === "reverse"
+const priceFromRow = (r, v = "normal") => !r || NO_PRICE.has(v) ? null : v === "reverse"
   ? firstPos(+r.trend_holo, +r.low_holo)
   : firstPos(+r.trend, +r.low, +r.trend_holo, +r.low_holo);
 const cardPrice = (id, v = "normal") => priceFromCm(S.prices[id]?.cm, v);
 const hasReverse = id => S.prices[id]?.variants?.reverse === true;
-const VLABEL = { normal: "Normal", reverse: "Reverse" };
+const VLABEL = { normal: "Normal", reverse: "Reverse", firstEdition: "1. udgave", shadowless: "Shadowless" };
+const VSHORT = { normal: "N", reverse: "R", firstEdition: "1.", shadowless: "S" };
+const VORDER = ["firstEdition", "shadowless", "normal", "reverse"];
+// Alle versioner et kort findes i. Shadowless findes kun i Base Set (1999).
+const variantsOf = id => {
+  const v = S.prices[id]?.variants || {}, out = [];
+  if (v.firstEdition) out.push("firstEdition");
+  if (setIdOf(id) === "base1") out.push("shadowless");
+  out.push("normal");
+  if (v.reverse) out.push("reverse");
+  return out;
+};
 const setStatus = (msg, err) => { const s = $("#status"); s.textContent = msg || ""; s.classList.toggle("err", !!err); };
 const numKey = n => { const m = String(n).match(/^(\D*)(\d+)(.*)$/); return m ? [m[1], +m[2], m[3]] : [String(n), 0, ""]; };
 const cmpNum = (a, b) => { const x = numKey(a.localId), y = numKey(b.localId); return x[0].localeCompare(y[0]) || x[1] - y[1] || x[2].localeCompare(y[2]); };
@@ -255,7 +268,7 @@ async function renderOverview(username) {
   let copies = 0, value = 0, noPrice = 0, revCount = 0;
   for (const r of rows) {
     const b = (bySet[r.set_id] ||= { cards: new Set(), rev: 0, value: 0 });
-    b.cards.add(r.card_id); if (r.variant === "reverse") { b.rev++; revCount++; }
+    b.cards.add(r.card_id); if (r.variant !== "normal") { b.rev++; revCount++; }
     copies += r.qty;
     const p = priceOf(r.card_id, r.variant);
     if (p) { b.value += p * r.qty; value += p * r.qty; } else noPrice++;
@@ -278,7 +291,7 @@ async function renderOverview(username) {
     <div class="pagehead"><h1>${mine ? "Min samling" : esc(user.username)}</h1><span class="grow"></span>
       ${mine ? `<a class="btn" href="#/tilfoej">Hurtig registrering</a><a class="btn primary" href="#/saet">Tilføj kort</a>` : ""}</div>
     <div class="stats">
-      <div class="stat"><small>Forskellige kort${revCount ? ` (+ ${revCount} reverse)` : ""}</small><b>${ids.length}</b></div>
+      <div class="stat"><small>Forskellige kort${revCount ? ` (+ ${revCount} andre versioner)` : ""}</small><b>${ids.length}</b></div>
       <div class="stat"><small>Kort i alt</small><b>${copies}</b></div>
       <div class="stat"><small>Samlet værdi${noPrice ? ` (${noPrice} uden pris endnu)` : ""}</small><b>${fmt(value)}</b></div>
       <div class="stat"><small>Sæt i gang</small><b>${setIds.length}</b></div>
@@ -299,7 +312,7 @@ async function renderOverview(username) {
             const s = S.setsById[id], total = s?.cardCount?.total || 0, own = bySet[id].cards.size, pct = total ? Math.min(100, own / total * 100) : 0;
             return `<li><a href="#/saet/${encodeURIComponent(id)}${userPart}">
               ${s?.logo ? `<img src="${esc(s.logo)}.webp" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : "<span></span>"}
-              <span><span class="n">${esc(s?.name || id)}</span><br><span class="s">${own} af ${total || "?"} kort${bySet[id].rev ? ` · ${bySet[id].rev} reverse` : ""}</span></span>
+              <span><span class="n">${esc(s?.name || id)}</span><br><span class="s">${own} af ${total || "?"} kort${bySet[id].rev ? ` · +${bySet[id].rev} versioner` : ""}</span></span>
               <span class="v">${fmt(bySet[id].value)}</span>
               <span class="progress"><i style="width:${pct}%"></i></span></a></li>`;
           }).join("")}</ul>` : `<div class="panel"><p class="empty" style="margin:0">${mine ? `Du har ikke registreret nogen kort endnu. <a href="#/tilfoej">Skriv dem ind på én gang</a> eller <a href="#/saet">vælg et sæt</a>.` : "Ingen kort registreret endnu."}</p></div>`}
@@ -309,7 +322,7 @@ async function renderOverview(username) {
         <p class="label">Mest værdifulde kort</p>
         ${top.length ? `<ul class="topcards">${top.map(t => { const c = names[t.card_id];
           return `<li>${c?.image ? `<img src="${esc(c.image)}/low.webp" alt="" loading="lazy">` : "<span></span>"}
-            <span><span class="n">${esc(c?.name || t.card_id)}${t.variant === "reverse" ? " · reverse" : ""}</span><br><span class="s">${esc(c?.set_name || t.set_id)} · ${esc(c?.local_id || "")}${t.qty > 1 ? " · ×" + t.qty : ""}</span></span>
+            <span><span class="n">${esc(c?.name || t.card_id)}${t.variant !== "normal" ? " · " + VLABEL[t.variant].toLowerCase() : ""}</span><br><span class="s">${esc(c?.set_name || t.set_id)} · ${esc(c?.local_id || "")}${t.qty > 1 ? " · ×" + t.qty : ""}</span></span>
             <span class="v">${fmt(t.p)}</span></li>`; }).join("")}</ul>` : `<p class="empty">Priserne kommer, når opsamlingen har kørt.</p>`}
         <p class="hint">Værdien bygger på Cardmarkets trendpris${days.length ? `, senest opdateret ${new Date(days[days.length - 1]).toLocaleDateString("da-DK")}` : ""}. Nye kort får pris inden for en time.</p>
       </section>
@@ -410,11 +423,12 @@ function renderAdd() {
           <li><code>PAL 12-18</code> sætkode og et interval</li>
           <li><code>25x2</code> eller <code>25 x2</code> to styk</li>
           <li><code>25r</code> reverse holo, fx <code>12-18r</code> eller <code>25rx2</code></li>
+          <li><code>4e</code> 1. udgave og <code>4s</code> shadowless, fx <code>Base Set: 4e, 4s, 4</code></li>
           <li><code>TG05</code>, <code>GG12</code> specialnumre</li>
           <li>En linje uden sæt bruger sættet fra linjen over</li>
         </ul>
         <p>Sættet kan være navnet (<i>Paldea Evolved</i>), en del af navnet (<i>paldea</i>), koden (<i>PAL</i>) eller TCGdex-id'et (<i>sv02</i>).</p>
-        <p>Koder: SVI, PAL, OBF, MEW, PAR, PAF, TEF, TWM, SFA, SCR, SSP, PRE, JTG, DRI, BLK, WHT, MEG, PFL, samt Sword &amp; Shield og Sun &amp; Moon (fx BRS, CRZ, EVS, CEC).</p>
+        <p>Koder: SVI, PAL, OBF, MEW, PAR, PAF, TEF, TWM, SFA, SCR, SSP, PRE, JTG, DRI, BLK, WHT, MEG, PFL, samt Sword &amp; Shield og Sun &amp; Moon (fx BRS, CRZ, EVS, CEC) og de gamle sæt: BS, JU, FO, B2, TR, LC, GH, GC, N1-N4.</p>
       </aside>
     </div>`;
   const ta = $("#add-text");
@@ -462,7 +476,7 @@ function renderAdd() {
           <button class="btn primary" id="add-commit">Gem i min samling</button></div>
         <ul class="addlist">${items.map(it => { const had = existing[key(it)] || 0, nq = newQty(it);
           return `<li>${it.card.image ? `<img src="${esc(imgUrl(it.card))}" alt="" loading="lazy">` : "<span></span>"}
-            <span><span class="n">${esc(it.card.name)}${it.variant === "reverse" ? ` <span class="vtag">R</span>` : ""}</span><br><span class="s">${esc(it.card._setName)} · ${esc(it.card.localId)}</span></span>
+            <span><span class="n">${esc(it.card.name)}${it.variant !== "normal" ? ` <span class="vtag v-${it.variant}">${VSHORT[it.variant]}</span>` : ""}</span><br><span class="s">${esc(it.card._setName)} · ${esc(it.card.localId)}</span></span>
             <span class="q">${had ? `${had} → ` : ""}<b>${nq}</b></span></li>`; }).join("")}</ul>
       </div>` : (problems.length ? "" : `<p class="empty">Skriv noget i feltet først.</p>`)}`;
     const btn = $("#add-commit");
@@ -740,7 +754,7 @@ function renderPriceChart(el, { history, cm, reverse, range, tracked, onRange })
 function renderGrid({ user, mine, cards, owned, context, head, onReady, officialCount }) {
   const token = S.token, G = S.grid, multi = context === "pokemon";
   const q = (id, v) => owned[id]?.[v] || 0;
-  const slots = id => (G.rev && hasReverse(id)) ? ["normal", "reverse"] : ["normal"];
+  const slots = id => variantsOf(id).filter(v => v === "normal" || G.vs[v]);
   const missingSlots = id => slots(id).filter(v => !q(id, v));
   const ownedAny = id => slots(id).some(v => q(id, v));
   $("#app").innerHTML = `${head}
@@ -755,9 +769,8 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
         <button data-filter="missing" aria-pressed="${G.filter === "missing"}">Mangler</button>
         <button data-filter="owned" aria-pressed="${G.filter === "owned"}">Har</button>
       </div>
-      <div class="seg" role="group" aria-label="Reverse holo">
-        <button data-rev="0" aria-pressed="${!G.rev}">Uden reverse</button>
-        <button data-rev="1" aria-pressed="${G.rev}">Med reverse</button>
+      <div class="seg" role="group" aria-label="Versioner der tælles med">
+        ${["reverse", "firstEdition", "shadowless"].map(v => `<button data-vt="${v}" aria-pressed="${!!G.vs[v]}">${VLABEL[v]}</button>`).join("")}
       </div>
       <select id="g-sort" aria-label="Sortering">
         <option value="num">Sortér: ${multi ? "sæt og nummer" : "nummer"}</option><option value="price-desc">Sortér: dyreste først</option>
@@ -770,20 +783,22 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
   $("#g-sort").value = G.sort;
 
   const stats = () => {
-    let own = 0, total = 0, ownVal = 0, missVal = 0, missNo = 0, revOwn = 0, revTotal = 0;
+    let own = 0, total = 0, ownVal = 0, missVal = 0, missNo = 0;
+    const per = {};
     for (const c of cards) for (const v of slots(c.id)) {
-      const p = cardPrice(c.id, v), n = q(c.id, v);
-      total++; if (v === "reverse") revTotal++;
-      if (n) { own++; if (v === "reverse") revOwn++; if (p) ownVal += p * n; }
+      const p = cardPrice(c.id, v), n = q(c.id, v), pv = (per[v] ||= [0, 0]);
+      total++; pv[1]++;
+      if (n) { own++; pv[0]++; if (p) ownVal += p * n; }
       else if (p) missVal += p; else missNo++;
     }
+    const extra = VORDER.filter(v => v !== "normal" && per[v]).map(v => `${VLABEL[v].toLowerCase()} ${per[v][0]}/${per[v][1]}`).join(", ");
     const pct = total ? Math.round(own / total * 100) : 0;
     const known = cards.filter(c => S.prices[c.id]?.variants !== undefined).length;
     $("#g-stats").innerHTML = `
-      <div class="stat"><small>${mine ? "Samlet" : esc(user.username) + " har"}${G.rev ? ` · heraf reverse ${revOwn}/${revTotal}` : ""}</small><b>${own} / ${total}</b><div class="progress"><i style="width:${pct}%"></i></div></div>
+      <div class="stat"><small>${mine ? "Samlet" : esc(user.username) + " har"}${extra ? ` · heraf ${extra}` : ""}</small><b>${own} / ${total}</b><div class="progress"><i style="width:${pct}%"></i></div></div>
       <div class="stat"><small>Værdi</small><b>${fmt(ownVal)}</b></div>
       <div class="stat missing"><small>Pris for de ${total - own} manglende${missNo ? ` (${missNo} uden pris)` : ""}</small><b>${fmt(missVal)}</b></div>
-      ${G.rev && known < cards.length ? `<p class="hint" style="grid-column:1/-1;margin:0">Tjekker hvilke kort der findes i reverse… ${known}/${cards.length}</p>` : ""}`;
+      ${known < cards.length ? `<p class="hint" style="grid-column:1/-1;margin:0">Tjekker hvilke versioner kortene findes i… ${known}/${cards.length}</p>` : ""}`;
   };
   const sortVal = (c, sort) => { const ps = (sort === "list" ? [c._v] : slots(c.id)).map(v => cardPrice(c.id, v)).filter(Boolean); return ps.length ? Math.max(...ps) : null; };
   const sortList = (list, sort, keyFn) => {
@@ -804,11 +819,11 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
         G.sort === "num" ? "price-desc" : G.sort, c => cardPrice(c.id, c._v));
       let sum = 0, noP = 0;
       const rows = list.map(c => { const p = cardPrice(c.id, c._v); if (p) sum += p; else noP++; const cm = S.prices[c.id]?.cm;
-        const rev = c._v === "reverse";
+        const rev = c._v === "reverse", other = c._v !== "normal";
         return `<tr><td>${c.image ? `<img class="thumb" loading="lazy" src="${esc(imgUrl(c))}" alt="">` : ""}</td>
-          ${multi ? `<td>${esc(c._setName)}</td>` : ""}<td class="num">${esc(c.localId)}</td><td>${esc(c.name)}${rev ? ` <span class="vtag">R</span>` : ""}</td><td>${esc(S.prices[c.id]?.rarity || "")}</td>
-          <td class="num">${fmt(rev ? cm?.["low-holo"] : firstPos(cm?.low, cm?.["low-holo"]))}</td><td class="num"><b>${fmt(p)}</b></td>
-          <td class="num">${fmt(rev ? cm?.["avg30-holo"] : firstPos(cm?.avg30, cm?.["avg30-holo"]))}</td>
+          ${multi ? `<td>${esc(c._setName)}</td>` : ""}<td class="num">${esc(c.localId)}</td><td>${esc(c.name)}${other ? ` <span class="vtag v-${c._v}">${VSHORT[c._v]}</span>` : ""}</td><td>${esc(S.prices[c.id]?.rarity || "")}</td>
+          <td class="num">${fmt(NO_PRICE.has(c._v) ? null : rev ? cm?.["low-holo"] : firstPos(cm?.low, cm?.["low-holo"]))}</td><td class="num"><b>${fmt(p)}</b></td>
+          <td class="num">${fmt(NO_PRICE.has(c._v) ? null : rev ? cm?.["avg30-holo"] : firstPos(cm?.avg30, cm?.["avg30-holo"]))}</td>
           <td><a href="${esc(cmLink(c.name, c._setName))}" target="_blank" rel="noopener">Cardmarket ↗</a></td>
           ${mine ? `<td><button class="btn small" data-have="${esc(c.id)}" data-v="${c._v}">Har den</button></td>` : ""}</tr>`; }).join("");
       const cols = 8 + (multi ? 1 : 0) + (mine ? 1 : 0);
@@ -817,7 +832,7 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
         <tbody>${rows}</tbody>
         <tfoot><tr><td colspan="${multi ? 3 : 2}"></td><td colspan="3">${list.length} mangler${noP ? ` · ${noP} uden pris` : ""}</td><td class="num">${fmt(sum)}</td><td colspan="${cols - (multi ? 3 : 2) - 4}"></td></tr></tfoot>
         </table></div>
-        ${G.rev ? `<p class="hint"><span class="vtag">R</span> = reverse holo. Reverse-prisen er Cardmarkets pris for reverse-versionen.</p>` : ""}` : `<p class="empty">Du har dem alle. Flot!</p>`;
+        <p class="hint"><span class="vtag v-reverse">R</span> reverse holo · <span class="vtag v-firstEdition">1.</span> 1. udgave · <span class="vtag v-shadowless">S</span> shadowless. 1. udgave og shadowless har ingen separat pris i Cardmarkets prisguide.</p>` : `<p class="empty">Du har dem alle. Flot!</p>`;
       return;
     }
     let list = search(cards);
@@ -830,8 +845,8 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
       const state = have === sl.length ? " owned" : have ? " partial" : "";
       const line = v => { const n = q(c.id, v), p = cardPrice(c.id, v);
         return `<div class="vrow${n ? " has" : ""}" data-v="${v}">
-          <span class="vl">${sl.length > 1 ? (v === "reverse" ? "R" : "N") : ""}</span>
-          <span class="pr${p == null ? " none" : ""}">${p == null ? (S.prices[c.id] ? "ingen pris" : "…") : fmt(p)}</span>
+          <span class="vl">${sl.length > 1 ? VSHORT[v] : ""}</span>
+          <span class="pr${p == null ? " none" : ""}">${p == null ? (NO_PRICE.has(v) ? "–" : S.prices[c.id] ? "ingen pris" : "…") : fmt(p)}</span>
           ${mine ? `<span class="qty">${n ? `<button data-act="dec" aria-label="Færre ${VLABEL[v]}">−</button><span>${n}</span>` : ""}<button data-act="inc" aria-label="Tilføj ${VLABEL[v]}">+</button></span>`
                  : `<span class="qty"><span>${n ? "✓" + (n > 1 ? " ×" + n : "") : "–"}</span></span>`}
         </div>`; };
@@ -841,7 +856,7 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
         <div class="row"><span class="nm">${esc(c.name)}</span><span class="no">${esc(c.localId)}</span></div>
         ${sl.map(line).join("")}
       </div>`; }).join("")}</div>
-      <p class="hint">${mine ? "Tryk + og − for at registrere dine kort." : ""} ${G.rev ? "N = normal (eller holo), R = reverse holo. Grøn kant = alle versioner, gul = nogle." : ""} Klik på et kort for detaljer og Cardmarket-link.</p>`;
+      <p class="hint">${mine ? "Tryk + og − for at registrere dine kort." : ""} N = normal (unlimited/holo), R = reverse holo, 1. = 1. udgave, S = shadowless. Grøn kant = alle versioner, gul = nogle. Vælg øverst, hvilke versioner der tæller med. Klik på et kort for detaljer og Cardmarket-link.</p>`;
   };
   const all = () => { stats(); content(); };
 
@@ -861,7 +876,7 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
     const paintChart = () => {
       const el = dlg.querySelector("#dlg-chart"); if (!el || !hist) return;
       renderPriceChart(el, { history: hist, cm: S.prices[id]?.cm, reverse: hasReverse(id), range: S.chartRange,
-        tracked: hist.length > 0 || ["normal", "reverse"].some(v => q(id, v)),
+        tracked: hist.length > 0 || VORDER.some(v => q(id, v)),
         onRange: r => { S.chartRange = r; store.set("kp-range", r); paintChart(); } });
     };
     const draw = () => {
@@ -870,8 +885,8 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
       const rows = row("Trend", "trend") + row("Laveste", "low") + row("Snit 7 dage", "avg7") + row("Snit 30 dage", "avg30") +
         row("Reverse: trend", "trend-holo") + row("Reverse: laveste", "low-holo") + row("Reverse: snit 30 d.", "avg30-holo");
       const off = context === "set" ? officialCount : S.setsById[c._setId]?.cardCount?.official;
-      const vs = hasReverse(id) ? ["normal", "reverse"] : ["normal"];
-      const exists = vars ? [vars.normal && "normal", vars.holo && "holo", vars.reverse && "reverse holo", vars.firstEdition && "1. udgave"].filter(Boolean).join(", ") : "";
+      const vs = variantsOf(id);
+      const exists = vars ? [vars.firstEdition && "1. udgave", setIdOf(id) === "base1" && "shadowless", vars.normal && (setIdOf(id) === "base1" ? "unlimited" : "normal"), vars.holo && "holo", vars.reverse && "reverse holo"].filter(Boolean).join(", ") : "";
       dlg.innerHTML = `<button class="close" aria-label="Luk">×</button><div class="dlg">
         ${c.image ? `<img src="${esc(imgUrl(c, "high"))}" alt="${esc(c.name)}">` : "<div></div>"}
         <div><h3>${esc(c.name)}</h3>
@@ -905,7 +920,7 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
   const press = (sel, attr, val) => document.querySelectorAll(sel).forEach(x => x.setAttribute("aria-pressed", x.getAttribute(attr) === val));
   document.querySelectorAll("[data-view]").forEach(b => b.onclick = () => { G.view = b.dataset.view; press("[data-view]", "data-view", G.view); content(); });
   document.querySelectorAll("[data-filter]").forEach(b => b.onclick = () => { G.filter = b.dataset.filter; press("[data-filter]", "data-filter", G.filter); content(); });
-  document.querySelectorAll("[data-rev]").forEach(b => b.onclick = () => { G.rev = b.dataset.rev === "1"; store.set("kp-rev", G.rev); press("[data-rev]", "data-rev", b.dataset.rev); all(); });
+  document.querySelectorAll("[data-vt]").forEach(b => b.onclick = () => { const v = b.dataset.vt; G.vs[v] = !G.vs[v]; store.set("kp-vs", G.vs); b.setAttribute("aria-pressed", G.vs[v]); all(); });
   $("#g-sort").onchange = e => { G.sort = e.target.value; content(); };
   $("#g-q").oninput = e => { G.q = e.target.value.trim(); content(); };
   $("#g-content").onclick = e => {
