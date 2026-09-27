@@ -346,3 +346,24 @@ nav .short{display:none}
 }
 .plan-spread{max-width:960px}
 .plan-pages>.plan-page{max-width:480px}
+
+/* Poké Ball / Master Ball, gradering, egne priser */
+.vtag.v-pokeball{background:linear-gradient(#e3350d 0 45%,#1b1f2a 45% 55%,#fff 55%);color:#1b1f2a;text-shadow:0 0 2px #fff}
+.vtag.v-masterball{background:#6c3ab8;color:#fff}
+.gtag{display:inline-block;font:700 10px/1 var(--mono);background:#1b1f2a;color:#f2c14e;border-radius:4px;padding:2px 4px;vertical-align:1px}
+@media (prefers-color-scheme: dark){.gtag{background:#f2c14e;color:#1b1f2a}}
+.pr.ownp{text-decoration:underline dotted;text-underline-offset:3px}
+.vdet{margin-top:10px;font-size:14px}
+.vdet summary{cursor:pointer;font-weight:700}
+.vdet fieldset{border:1px solid var(--line);border-radius:10px;padding:8px 10px 10px;margin:8px 0 0}
+.vdet legend{font-weight:700;padding:0 4px}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px}
+.fgrid label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted);font-weight:600}
+.fgrid label.wide{grid-column:1/-1}
+.fgrid input,.fgrid select{font-size:14px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;background:var(--ground);color:var(--ink);min-width:0}
+.fgrid .hrow{flex-wrap:nowrap}
+.fgrid .hrow select{flex:1;min-width:0}
+.fgrid .hrow input{width:84px}
+.gain{margin:8px 0 0;font-size:13px;color:var(--muted)}
+.gain b{color:var(--ink)}
+.stat b.up::first-letter,.stat b.down::first-letter{font-size:.8em}
