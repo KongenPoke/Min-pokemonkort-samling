@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Kortpermen</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='3' width='22' height='26' rx='3' fill='%23C8322D'/%3E%3Crect x='9' y='7' width='14' height='18' rx='2' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="bar-in">
+    <a class="brand" href="#/samling">Kortpermen</a>
+    <nav id="nav" hidden>
+      <a href="#/samling" data-nav="samling">Min samling</a>
+      <a href="#/saet" data-nav="saet">Sæt</a>
+      <a href="#/venner" data-nav="venner">Venner</a>
+    </nav>
+    <div class="bar-right">
+      <div class="seg" role="group" aria-label="Valuta">
+        <button id="cur-eur" aria-pressed="true">EUR</button>
+        <button id="cur-dkk" aria-pressed="false">DKK</button>
+      </div>
+      <span id="who" class="who" hidden></span>
+      <button class="btn small" id="logout" hidden>Log ud</button>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <p class="status" id="status" role="status"></p>
+  <main id="app"><p class="empty">Indlæser…</p></main>
+</div>
+
+<dialog id="dlg"></dialog>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
