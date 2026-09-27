@@ -274,3 +274,12 @@ nav .short{display:none}
 /* installeret som app: ingen browserlinje, så lidt ekstra luft øverst */
 @media (display-mode: standalone){ .bar{padding-top:max(env(safe-area-inset-top,0px),4px)} }
 .install-steps{margin:0;padding-left:18px;font-size:14px;display:flex;flex-direction:column;gap:4px}
+
+/* forslag til Pokémon-navne */
+.combo{position:relative;flex:1 1 240px;min-width:0}
+.combo input{width:100%}
+.combo-list{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:30;list-style:none;margin:0;padding:4px;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.14);max-height:320px;overflow:auto}
+.combo-list li{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:9px 10px;border-radius:7px;cursor:pointer}
+.combo-list li[aria-selected="true"],.combo-list li:hover{background:var(--pocket)}
+.combo-list .n{font-weight:600}
+.combo-list .m{font-size:12px;color:var(--muted);font-family:var(--mono);white-space:nowrap}

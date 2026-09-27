@@ -568,9 +568,13 @@ async function renderPokemonHub() {
   const owned = new Set(rows.map(r => r.card_id));
   $("#app").innerHTML = `
     <div class="pagehead"><h1>Mastersets</h1></div>
-    <form class="panel hrow" id="poke-form">
+    <form class="panel hrow" id="poke-form" autocomplete="off">
       <label for="poke-q" class="sr">Pokémon</label>
-      <input type="text" id="poke-q" placeholder="Skriv en Pokémon, fx Charizard, Umbreon eller Pikachu" required style="flex:1 1 240px">
+      <div class="combo">
+        <input type="text" id="poke-q" placeholder="Skriv en Pokémon, fx Charizard, Umbreon eller Pikachu" required
+          role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="poke-list" autocapitalize="words" spellcheck="false">
+        <ul class="combo-list" id="poke-list" role="listbox" hidden></ul>
+      </div>
       <button class="btn primary" type="submit">Vis alle kort</button>
     </form>
     <p class="hint">Et masterset er alle engelske kort med Pokémonen i navnet på tværs af alle sæt, fx også Charizard ex, Dark Charizard og tag team-kort. Kort, du allerede har registreret i et sæt, tæller automatisk med.</p>
@@ -579,7 +583,13 @@ async function renderPokemonHub() {
     ${tracked?.length ? `<ul class="setlist">${tracked.map(t => `<li><a href="#/pokemon/${encodeURIComponent(t.name)}" data-master="${esc(t.name)}">
       <span class="mono-badge">${esc(t.name.slice(0, 2))}</span><span><span class="n">${esc(t.name)}</span><br><span class="s">Henter kort…</span></span><span class="v"></span>
       <span class="progress"><i style="width:0%"></i></span></a></li>`).join("")}</ul>` : `<p class="empty">Du har ikke gemt nogen mastersets endnu. Søg en Pokémon frem og tryk "Gem som masterset".</p>`}`;
-  $("#poke-form").onsubmit = e => { e.preventDefault(); const n = pokeName($("#poke-q").value); if (n) location.hash = "#/pokemon/" + encodeURIComponent(n); };
+  wireSuggest($("#poke-q"), $("#poke-list"), name => { location.hash = "#/pokemon/" + encodeURIComponent(name); });
+  $("#poke-form").onsubmit = async e => {
+    e.preventDefault();
+    const { canonical } = await import("./suggest.js");
+    const raw = $("#poke-q").value, n = canonical(raw) || pokeName(raw);
+    if (n) location.hash = "#/pokemon/" + encodeURIComponent(n);
+  };
   for (const t of tracked || []) {
     getPokemonCards(t.name).then(cards => {
       if (token !== S.token) return;
@@ -591,9 +601,42 @@ async function renderPokemonHub() {
   }
 }
 
+// Forslag mens man skriver: piletaster, Enter og klik vælger. Navnelisten hentes først, når feltet bruges.
+function wireSuggest(input, list, onPick) {
+  let items = [], active = -1, mod = null;
+  const close = () => { list.hidden = true; input.setAttribute("aria-expanded", "false"); input.removeAttribute("aria-activedescendant"); active = -1; };
+  const paint = () => {
+    list.replaceChildren(...items.map((s, i) => {
+      const li = document.createElement("li");
+      li.id = "sug-" + i; li.setAttribute("role", "option"); li.setAttribute("aria-selected", i === active);
+      const n = document.createElement("span"); n.className = "n"; n.textContent = s.name;
+      const m = document.createElement("span"); m.className = "m"; m.textContent = (s.via ? s.via + " · " : "") + "#" + String(s.dex).padStart(4, "0");
+      li.append(n, m);
+      li.onpointerdown = e => { e.preventDefault(); input.value = s.name; close(); onPick(s.name); };
+      return li;
+    }));
+    list.hidden = !items.length; input.setAttribute("aria-expanded", String(!!items.length));
+    if (active >= 0) { input.setAttribute("aria-activedescendant", "sug-" + active); list.children[active]?.scrollIntoView({ block: "nearest" }); }
+  };
+  input.addEventListener("input", async () => {
+    mod ||= await import("./suggest.js");
+    items = input.value.trim() ? mod.suggest(input.value, 8) : []; active = items.length ? 0 : -1; paint();
+  });
+  input.addEventListener("keydown", e => {
+    if (list.hidden) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); active = (active + 1) % items.length; paint(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); active = (active - 1 + items.length) % items.length; paint(); }
+    else if (e.key === "Enter" && active >= 0) { e.preventDefault(); const s = items[active]; input.value = s.name; close(); onPick(s.name); }
+    else if (e.key === "Escape") close();
+  });
+  input.addEventListener("blur", () => setTimeout(close, 120));
+}
+
 async function renderPokemon(rawName, username) {
   const token = S.token;
-  const name = pokeName(rawName);
+  const sug = await import("./suggest.js");
+  const name = sug.canonical(rawName) || pokeName(rawName);
+  if (name !== rawName && sug.canonical(rawName)) { location.replace("#/pokemon/" + encodeURIComponent(name) + (username ? "/" + encodeURIComponent(username) : "")); return; }
   const user = await userByName(username);
   if (!user) { $("#app").innerHTML = `<p class="empty">Brugeren findes ikke.</p>`; return; }
   const mine = user.id === S.me.id;
@@ -601,7 +644,8 @@ async function renderPokemon(rawName, username) {
   const cards = await getPokemonCards(name);
   if (token !== S.token) return;
   if (!cards.length) {
-    $("#app").innerHTML = `<div class="pagehead"><h1>${esc(name)}</h1></div><div class="panel"><p class="empty" style="margin:0">Fandt ingen engelske kort med "${esc(name)}" i navnet. Tjek stavningen (engelsk navn, fx <i>Charizard</i> og ikke <i>Glurak</i>). <a href="#/pokemon">Prøv igen</a></p></div>`;
+    $("#app").innerHTML = `<div class="pagehead"><h1>${esc(name)}</h1></div><div class="panel"><p class="empty" style="margin:0">Fandt ingen engelske kort med "${esc(name)}" i navnet. ${(() => { const alt = sug.suggest(name, 5).filter(s => s.name !== name);
+      return alt.length ? `Mente du ${alt.map(s => `<a href="#/pokemon/${encodeURIComponent(s.name)}">${esc(s.name)}</a>`).join(", ")}?` : `<a href="#/pokemon">Prøv igen</a>`; })()}</p></div>`;
     return;
   }
   const [rows, trackedRes] = await Promise.all([
