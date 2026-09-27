@@ -25,10 +25,11 @@ const S = {
   session: null, me: null,
   sets: [], setsById: {},
   currency: store.get("kp-currency", "EUR"),
-  prices: store.get("kp-prices", {}),       // card_id -> {t, cm, rarity}
+  prices: store.get("kp-prices", {}),       // card_id -> {t, cm, rarity, variants}
   token: 0,                                  // skifter ved hver visning, så gamle hentninger stopper
-  grid: { view: "binder", filter: "all", sort: "num", q: "" },
+  grid: { view: "binder", filter: "all", sort: "num", q: "", rev: store.get("kp-rev", true) },
   addText: store.get("kp-addtext", ""),
+  chartRange: store.get("kp-range", "90"),
 };
 const fmt = eur => {
   if (eur == null || isNaN(eur)) return "–";
@@ -36,9 +37,16 @@ const fmt = eur => {
   return new Intl.NumberFormat("da-DK", { style: "currency", currency: S.currency, maximumFractionDigits: 2 }).format(v);
 };
 const firstPos = (...xs) => { for (const x of xs) if (typeof x === "number" && x > 0) return x; return null; };
-const priceFromCm = cm => cm ? firstPos(cm.trend, cm["trend-holo"], cm.avg, cm["avg-holo"], cm.low, cm["low-holo"]) : null;
-const priceFromRow = r => r ? firstPos(+r.trend, +r.trend_holo, +r.low, +r.low_holo) : null;
-const cardPrice = id => priceFromCm(S.prices[id]?.cm);
+// Cardmarkets "-holo"-felter er reverse holo-prisen; normal/holo-kortet selv står i trend/avg/low
+const priceFromCm = (cm, v = "normal") => !cm ? null : v === "reverse"
+  ? firstPos(cm["trend-holo"], cm["avg-holo"], cm["low-holo"])
+  : firstPos(cm.trend, cm.avg, cm.low, cm["trend-holo"], cm["avg-holo"], cm["low-holo"]);
+const priceFromRow = (r, v = "normal") => !r ? null : v === "reverse"
+  ? firstPos(+r.trend_holo, +r.low_holo)
+  : firstPos(+r.trend, +r.low, +r.trend_holo, +r.low_holo);
+const cardPrice = (id, v = "normal") => priceFromCm(S.prices[id]?.cm, v);
+const hasReverse = id => S.prices[id]?.variants?.reverse === true;
+const VLABEL = { normal: "Normal", reverse: "Reverse" };
 const setStatus = (msg, err) => { const s = $("#status"); s.textContent = msg || ""; s.classList.toggle("err", !!err); };
 const numKey = n => { const m = String(n).match(/^(\D*)(\d+)(.*)$/); return m ? [m[1], +m[2], m[3]] : [String(n), 0, ""]; };
 const cmpNum = (a, b) => { const x = numKey(a.localId), y = numKey(b.localId); return x[0].localeCompare(y[0]) || x[1] - y[1] || x[2].localeCompare(y[2]); };
@@ -110,14 +118,14 @@ async function getPokemonCards(name) {
 }
 async function loadPrices(cards, force, onProgress) {
   const token = S.token;
-  const todo = cards.filter(c => force || !S.prices[c.id] || Date.now() - S.prices[c.id].t > PRICE_TTL);
+  const todo = cards.filter(c => force || !S.prices[c.id] || !("variants" in S.prices[c.id]) || Date.now() - S.prices[c.id].t > PRICE_TTL);
   let i = 0, done = 0, failed = 0;
   const worker = async () => {
     while (i < todo.length && token === S.token) {
       const c = todo[i++];
       try {
         const d = await getJSON(`${API}/cards/${encodeURIComponent(c.id)}`);
-        S.prices[c.id] = { t: Date.now(), cm: d.pricing?.cardmarket || null, rarity: d.rarity || null };
+        S.prices[c.id] = { t: Date.now(), cm: d.pricing?.cardmarket || null, rarity: d.rarity || null, variants: d.variants || null };
       } catch { failed++; }
       done++;
       if (done % 12 === 0 || done === todo.length) { store.set("kp-prices", S.prices); if (token === S.token) onProgress?.(done, todo.length); }
@@ -144,11 +152,13 @@ function scheduleSnapshot() { // beder serveren hente dagens priser for nye kort
   clearTimeout(snapTimer);
   snapTimer = setTimeout(() => sb.functions.invoke("snapshot-prices", { body: {} }).catch(() => {}), 8000);
 }
-async function saveQty(id, n) {
+async function saveQty(id, variant, n) {
   return n
-    ? sb.from("collection").upsert({ user_id: S.me.id, card_id: id, qty: n })
-    : sb.from("collection").delete().eq("user_id", S.me.id).eq("card_id", id);
+    ? sb.from("collection").upsert({ user_id: S.me.id, card_id: id, variant, qty: n })
+    : sb.from("collection").delete().eq("user_id", S.me.id).eq("card_id", id).eq("variant", variant);
 }
+// rækker fra collection -> { card_id: { normal: n, reverse: m } }
+const toOwned = rows => { const o = {}; for (const r of rows) (o[r.card_id] ||= {})[r.variant || "normal"] = r.qty; return o; };
 
 // ---------------- routing ----------------
 // #/samling[/bruger]  #/saet[/sæt[/bruger]]  #/pokemon[/navn[/bruger]]  #/tilfoej  #/venner
@@ -231,28 +241,29 @@ async function renderOverview(username) {
   const mine = user.id === S.me.id;
   $("#app").innerHTML = `<p class="empty">Henter samling…</p>`;
   const [rows, tracked] = await Promise.all([
-    fetchAll(() => sb.from("collection").select("card_id,qty,set_id").eq("user_id", user.id)),
+    fetchAll(() => sb.from("collection").select("card_id,qty,set_id,variant").eq("user_id", user.id)),
     sb.from("tracked_pokemon").select("name").eq("user_id", user.id).order("created_at").then(r => r.data || []),
   ]);
   if (token !== S.token) return;
 
-  const ids = rows.map(r => r.card_id), latest = {};
+  const ids = [...new Set(rows.map(r => r.card_id))], latest = {};
   for (const p of await fetchIn(() => sb.from("latest_prices").select("card_id,trend,low,trend_holo,low_holo,day"), ids)) latest[p.card_id] = p;
   if (token !== S.token) return;
-  const priceOf = id => priceFromRow(latest[id]) ?? cardPrice(id);
+  const priceOf = (id, v) => priceFromRow(latest[id], v) ?? cardPrice(id, v);
 
   const bySet = {};
-  let copies = 0, value = 0, noPrice = 0;
+  let copies = 0, value = 0, noPrice = 0, revCount = 0;
   for (const r of rows) {
-    (bySet[r.set_id] ||= { own: 0, value: 0 });
-    bySet[r.set_id].own++; copies += r.qty;
-    const p = priceOf(r.card_id);
-    if (p) { bySet[r.set_id].value += p * r.qty; value += p * r.qty; } else noPrice++;
+    const b = (bySet[r.set_id] ||= { cards: new Set(), rev: 0, value: 0 });
+    b.cards.add(r.card_id); if (r.variant === "reverse") { b.rev++; revCount++; }
+    copies += r.qty;
+    const p = priceOf(r.card_id, r.variant);
+    if (p) { b.value += p * r.qty; value += p * r.qty; } else noPrice++;
   }
   const setIds = Object.keys(bySet).sort((a, b) => (S.setsById[b]?.order ?? -1) - (S.setsById[a]?.order ?? -1));
-  const ownedSet = new Set(ids);
+  const ownedSet = new Set(ids), revSet = new Set(rows.filter(r => r.variant === "reverse").map(r => r.card_id));
 
-  const top = rows.map(r => ({ ...r, p: priceOf(r.card_id) })).filter(r => r.p).sort((a, b) => b.p - a.p).slice(0, 5);
+  const top = rows.map(r => ({ ...r, p: priceOf(r.card_id, r.variant) })).filter(r => r.p).sort((a, b) => b.p - a.p).slice(0, 5);
   let names = {};
   if (top.length) {
     const { data } = await sb.from("cards").select("card_id,name,set_name,local_id,image").in("card_id", top.map(t => t.card_id));
@@ -267,7 +278,7 @@ async function renderOverview(username) {
     <div class="pagehead"><h1>${mine ? "Min samling" : esc(user.username)}</h1><span class="grow"></span>
       ${mine ? `<a class="btn" href="#/tilfoej">Hurtig registrering</a><a class="btn primary" href="#/saet">Tilføj kort</a>` : ""}</div>
     <div class="stats">
-      <div class="stat"><small>Forskellige kort</small><b>${rows.length}</b></div>
+      <div class="stat"><small>Forskellige kort${revCount ? ` (+ ${revCount} reverse)` : ""}</small><b>${ids.length}</b></div>
       <div class="stat"><small>Kort i alt</small><b>${copies}</b></div>
       <div class="stat"><small>Samlet værdi${noPrice ? ` (${noPrice} uden pris endnu)` : ""}</small><b>${fmt(value)}</b></div>
       <div class="stat"><small>Sæt i gang</small><b>${setIds.length}</b></div>
@@ -285,10 +296,10 @@ async function renderOverview(username) {
         <div>
           <p class="label">Sæt</p>
           ${setIds.length ? `<ul class="setlist">${setIds.map(id => {
-            const s = S.setsById[id], total = s?.cardCount?.total || 0, own = bySet[id].own, pct = total ? Math.min(100, own / total * 100) : 0;
+            const s = S.setsById[id], total = s?.cardCount?.total || 0, own = bySet[id].cards.size, pct = total ? Math.min(100, own / total * 100) : 0;
             return `<li><a href="#/saet/${encodeURIComponent(id)}${userPart}">
               ${s?.logo ? `<img src="${esc(s.logo)}.webp" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : "<span></span>"}
-              <span><span class="n">${esc(s?.name || id)}</span><br><span class="s">${own} af ${total || "?"} kort</span></span>
+              <span><span class="n">${esc(s?.name || id)}</span><br><span class="s">${own} af ${total || "?"} kort${bySet[id].rev ? ` · ${bySet[id].rev} reverse` : ""}</span></span>
               <span class="v">${fmt(bySet[id].value)}</span>
               <span class="progress"><i style="width:${pct}%"></i></span></a></li>`;
           }).join("")}</ul>` : `<div class="panel"><p class="empty" style="margin:0">${mine ? `Du har ikke registreret nogen kort endnu. <a href="#/tilfoej">Skriv dem ind på én gang</a> eller <a href="#/saet">vælg et sæt</a>.` : "Ingen kort registreret endnu."}</p></div>`}
@@ -298,7 +309,7 @@ async function renderOverview(username) {
         <p class="label">Mest værdifulde kort</p>
         ${top.length ? `<ul class="topcards">${top.map(t => { const c = names[t.card_id];
           return `<li>${c?.image ? `<img src="${esc(c.image)}/low.webp" alt="" loading="lazy">` : "<span></span>"}
-            <span><span class="n">${esc(c?.name || t.card_id)}</span><br><span class="s">${esc(c?.set_name || t.set_id)} · ${esc(c?.local_id || "")}${t.qty > 1 ? " · ×" + t.qty : ""}</span></span>
+            <span><span class="n">${esc(c?.name || t.card_id)}${t.variant === "reverse" ? " · reverse" : ""}</span><br><span class="s">${esc(c?.set_name || t.set_id)} · ${esc(c?.local_id || "")}${t.qty > 1 ? " · ×" + t.qty : ""}</span></span>
             <span class="v">${fmt(t.p)}</span></li>`; }).join("")}</ul>` : `<p class="empty">Priserne kommer, når opsamlingen har kørt.</p>`}
         <p class="hint">Værdien bygger på Cardmarkets trendpris${days.length ? `, senest opdateret ${new Date(days[days.length - 1]).toLocaleDateString("da-DK")}` : ""}. Nye kort får pris inden for en time.</p>
       </section>
@@ -310,7 +321,8 @@ async function renderOverview(username) {
       if (token !== S.token) return;
       const a = document.querySelector(`[data-master="${CSS.escape(t.name)}"]`); if (!a) return;
       const own = cards.filter(c => ownedSet.has(c.id)).length, pct = cards.length ? own / cards.length * 100 : 0;
-      a.querySelector(".s").textContent = `${own} af ${cards.length} kort · ${new Set(cards.map(c => c._setId)).size} sæt`;
+      const rev = cards.filter(c => revSet.has(c.id)).length;
+      a.querySelector(".s").textContent = `${own} af ${cards.length} kort${rev ? ` · ${rev} reverse` : ""} · ${new Set(cards.map(c => c._setId)).size} sæt`;
       a.querySelector(".progress i").style.width = pct + "%";
     }).catch(() => {});
   }
@@ -379,7 +391,7 @@ function renderAdd() {
       <section class="stack">
         <div class="panel stack">
           <label class="label" for="add-text">Skriv sæt og kortnumre</label>
-          <textarea id="add-text" rows="9" spellcheck="false" placeholder="151: 1, 4, 6, 25x2, 199&#10;PAL 12-18&#10;Crown Zenith GG01-GG05 TG5"></textarea>
+          <textarea id="add-text" rows="9" spellcheck="false" placeholder="151: 1, 4, 6, 25x2, 199&#10;PAL 12-18, 12-18r&#10;Crown Zenith GG01-GG05 TG5"></textarea>
           <div class="hrow">
             <div class="seg" role="group" aria-label="Antal">
               <button data-mode="add" aria-pressed="${mode === "add"}">Læg til det jeg har</button>
@@ -397,6 +409,7 @@ function renderAdd() {
           <li><code>151: 1, 4, 6</code> sæt, kolon og numre</li>
           <li><code>PAL 12-18</code> sætkode og et interval</li>
           <li><code>25x2</code> eller <code>25 x2</code> to styk</li>
+          <li><code>25r</code> reverse holo, fx <code>12-18r</code> eller <code>25rx2</code></li>
           <li><code>TG05</code>, <code>GG12</code> specialnumre</li>
           <li>En linje uden sæt bruger sættet fra linjen over</li>
         </ul>
@@ -423,35 +436,39 @@ function renderAdd() {
       const sd = setData[l.set.id];
       if (!sd) { problems.push(`${l.line}: kunne ikke hente sættet ${l.set.name}`); continue; }
       const { found, missing } = matchRefs(l.refs, sd.cards || []);
-      for (const f of found) { const c = decorate(f.card, l.set.id); const cur = items.get(c.id); items.set(c.id, { card: c, qty: (cur?.qty || 0) + f.qty }); }
+      for (const f of found) {
+        const c = decorate(f.card, l.set.id), key = c.id + "|" + f.variant, cur = items.get(key);
+        items.set(key, { card: c, variant: f.variant, qty: (cur?.qty || 0) + f.qty });
+      }
       if (missing.length) problems.push(`${l.set.name}: findes ikke: ${missing.join(", ")}`);
       if (l.bad.length) problems.push(`${l.line}: forstod ikke: ${l.bad.join(", ")}`);
       if (!l.refs.length && !l.bad.length) problems.push(`${l.line}: ingen kortnumre`);
     }
-    const ids = [...items.keys()];
-    const existing = Object.fromEntries((await fetchIn(() => sb.from("collection").select("card_id,qty").eq("user_id", S.me.id), ids)).map(r => [r.card_id, r.qty]));
+    const ids = [...new Set([...items.values()].map(it => it.card.id))];
+    const existing = Object.fromEntries((await fetchIn(() => sb.from("collection").select("card_id,qty,variant").eq("user_id", S.me.id), ids)).map(r => [r.card_id + "|" + r.variant, r.qty]));
     if (token !== S.token) return;
-    parsed = { items: [...items.values()].sort(cmpCard), problems, existing };
+    parsed = { items: [...items.values()].sort((a, b) => cmpCard(a.card, b.card) || a.variant.localeCompare(b.variant)), problems, existing };
     show();
   }
   function show() {
     const { items, problems, existing } = parsed;
-    const newQty = it => Math.min(999, mode === "add" ? (existing[it.card.id] || 0) + it.qty : it.qty);
+    const key = it => it.card.id + "|" + it.variant;
+    const newQty = it => Math.min(999, mode === "add" ? (existing[key(it)] || 0) + it.qty : it.qty);
     const copies = items.reduce((s, it) => s + it.qty, 0);
     $("#add-result").innerHTML = `
       ${problems.length ? `<div class="panel problems"><p class="label">Tjek disse</p><ul>${problems.map(p => `<li>${esc(p)}</li>`).join("")}</ul></div>` : ""}
       ${items.length ? `<div class="panel stack">
         <div class="hrow"><b>${items.length} kort fundet${copies !== items.length ? ` (${copies} styk)` : ""}</b><span class="grow"></span>
           <button class="btn primary" id="add-commit">Gem i min samling</button></div>
-        <ul class="addlist">${items.map(it => { const had = existing[it.card.id] || 0, nq = newQty(it);
+        <ul class="addlist">${items.map(it => { const had = existing[key(it)] || 0, nq = newQty(it);
           return `<li>${it.card.image ? `<img src="${esc(imgUrl(it.card))}" alt="" loading="lazy">` : "<span></span>"}
-            <span><span class="n">${esc(it.card.name)}</span><br><span class="s">${esc(it.card._setName)} · ${esc(it.card.localId)}</span></span>
+            <span><span class="n">${esc(it.card.name)}${it.variant === "reverse" ? ` <span class="vtag">R</span>` : ""}</span><br><span class="s">${esc(it.card._setName)} · ${esc(it.card.localId)}</span></span>
             <span class="q">${had ? `${had} → ` : ""}<b>${nq}</b></span></li>`; }).join("")}</ul>
       </div>` : (problems.length ? "" : `<p class="empty">Skriv noget i feltet først.</p>`)}`;
     const btn = $("#add-commit");
     if (btn) btn.onclick = async () => {
       btn.disabled = true; btn.textContent = "Gemmer…";
-      const payload = items.map(it => ({ user_id: S.me.id, card_id: it.card.id, qty: newQty(it) }));
+      const payload = items.map(it => ({ user_id: S.me.id, card_id: it.card.id, variant: it.variant, qty: newQty(it) }));
       let error = null;
       for (let i = 0; i < payload.length && !error; i += 500) ({ error } = await sb.from("collection").upsert(payload.slice(i, i + 500)));
       if (error) { btn.disabled = false; btn.textContent = "Gem i min samling"; setStatus("Kunne ikke gemme: " + error.message, true); return; }
@@ -513,11 +530,11 @@ async function renderPokemon(rawName, username) {
     return;
   }
   const [rows, trackedRes] = await Promise.all([
-    fetchIn(() => sb.from("collection").select("card_id,qty").eq("user_id", user.id), cards.map(c => c.id)),
+    fetchIn(() => sb.from("collection").select("card_id,qty,variant").eq("user_id", user.id), cards.map(c => c.id)),
     sb.from("tracked_pokemon").select("name").eq("user_id", S.me.id).eq("name", name).maybeSingle(),
   ]);
   if (token !== S.token) return;
-  const owned = Object.fromEntries(rows.map(r => [r.card_id, r.qty]));
+  const owned = toOwned(rows);
   let tracked = !!trackedRes.data;
   const nSets = new Set(cards.map(c => c._setId)).size;
   const trackBtn = () => `<button class="btn${tracked ? "" : " primary"}" id="track">${tracked ? "Fjern fra mine mastersets" : "Gem som masterset"}</button>`;
@@ -526,7 +543,7 @@ async function renderPokemon(rawName, username) {
     head: `
       ${mine ? "" : `<div class="viewing">Du ser <b>${esc(user.username)}</b>s ${esc(name)}-kort. <a href="#/pokemon/${encodeURIComponent(name)}">Se dine egne</a></div>`}
       <div class="pagehead">
-        <div><h1>${esc(name)} masterset</h1><div class="meta">${cards.length} engelske kort fra ${nSets} sæt · normalversioner (reverse holo tælles ikke separat)</div></div>
+        <div><h1>${esc(name)} masterset</h1><div class="meta">${cards.length} engelske kort fra ${nSets} sæt</div></div>
         <span class="grow"></span><span id="trackwrap">${trackBtn()}</span>
       </div>`,
     onReady() {
@@ -559,8 +576,7 @@ async function renderSet(setId, username) {
   $("#app").innerHTML = `<p class="empty">Henter sættet…</p>`;
   const [set, owned] = await Promise.all([
     getSet(setId),
-    fetchAll(() => sb.from("collection").select("card_id,qty").eq("user_id", user.id).eq("set_id", setId))
-      .then(rows => Object.fromEntries(rows.map(r => [r.card_id, r.qty]))),
+    fetchAll(() => sb.from("collection").select("card_id,qty,variant").eq("user_id", user.id).eq("set_id", setId)).then(toOwned),
   ]);
   if (token !== S.token) return;
   const userPart = mine ? "" : "/" + encodeURIComponent(user.username);
@@ -588,9 +604,145 @@ async function renderSet(setId, username) {
   });
 }
 
+// ---------------- prisgrafer i kortvisningen ----------------
+const SERIES = [
+  { key: "normal", name: "Normal", col: "trend", color: "var(--s1)" },
+  { key: "reverse", name: "Reverse", col: "trend_holo", color: "var(--s2)" },
+];
+const RANGES = [["30", "30 dage"], ["90", "90 dage"], ["365", "1 år"], ["all", "Alt"]];
+const dayFmt = d => d.toLocaleDateString("da-DK", { day: "numeric", month: "short" });
+const conv = eur => (S.currency === "DKK" ? eur * DKK_RATE : eur);
+const niceTicks = (lo, hi, n = 4) => {
+  if (hi <= lo) { const p = Math.max(0.01, Math.abs(hi) * 0.1); lo -= p; hi += p; }
+  const raw = (hi - lo) / n, mag = 10 ** Math.floor(Math.log10(raw)), step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => raw <= s);
+  const a = Math.floor(lo / step) * step, ticks = [];
+  for (let v = a; ; v += step) { ticks.push(+v.toFixed(6)); if (v >= hi - step * 1e-6 || ticks.length > 12) break; }
+  return ticks;
+};
+const axisFmt = v => new Intl.NumberFormat("da-DK", { maximumFractionDigits: v < 10 ? 2 : 0 }).format(v);
+
+// Tegner prishistorik (linjer) eller, hvis historikken er for kort, Cardmarkets gennemsnit (søjler)
+function renderPriceChart(el, { history, cm, reverse, range, tracked, onRange }) {
+  const series = SERIES.filter(s => s.key === "normal" || reverse).map(s => ({
+    ...s, pts: history.map(h => ({ d: new Date(h.day + "T12:00:00"), v: +h[s.col] })).filter(p => p.v > 0),
+  })).filter(s => s.pts.length);
+  const days = history.length;
+  const since = days ? new Date(history[0].day + "T12:00:00").toLocaleDateString("da-DK", { day: "numeric", month: "long", year: "numeric" }) : null;
+
+  // --- stat-linje: nuværende pris og ændring mod 30-dages snittet
+  const now = firstPos(cm?.trend, cm?.avg), a30 = firstPos(cm?.avg30);
+  const chg = now && a30 ? (now - a30) / a30 * 100 : null;
+  const statLine = now ? `<div class="pc-stat"><b>${fmt(now)}</b> <span class="pc-sub">trend nu</span>
+    ${chg != null && isFinite(chg) ? `<span class="pc-chg">${chg >= 0 ? "▲" : "▼"} ${Math.abs(chg).toFixed(1).replace(".", ",")} % mod snit 30 dage</span>` : ""}</div>` : "";
+
+  // --- ikke nok historik endnu: søjler med Cardmarkets gennemsnit
+  if (series.every(s => s.pts.length < 2)) {
+    const bars = [["Snit 30 dage", cm?.avg30], ["Snit 7 dage", cm?.avg7], ["Snit 1 dag", cm?.avg1], ["Trend", cm?.trend]].filter(b => b[1] > 0);
+    const max = Math.max(...bars.map(b => b[1]), 0);
+    el.innerHTML = `<p class="label">Prisudvikling</p>${statLine}
+      ${bars.length ? `<div class="pc-bars" role="img" aria-label="Cardmarket-gennemsnit for normalversionen">${bars.map(([l, v]) => `
+        <div class="pc-bar" title="${esc(l)}: ${esc(fmt(v))}"><span class="pc-bl">${l}</span>
+          <span class="pc-track"><i style="width:${max ? Math.max(2, v / max * 100) : 0}%"></i></span><span class="pc-bv">${fmt(v)}</span></div>`).join("")}</div>
+        <p class="hint">Cardmarkets gennemsnit for normalversionen. Sammenligner du dem, kan du se, om prisen er på vej op eller ned.</p>` : `<p class="empty">Ingen Cardmarket-priser for dette kort.</p>`}
+      <p class="hint">${tracked
+        ? `Prishistorikken gemmes hver dag${since ? ` siden ${since}` : " fra i dag"}. Grafen over udviklingen dukker op, når der er gået et par dage.`
+        : `Prishistorik gemmes for kort, som nogen har i samlingen. Tilføj kortet, så begynder siden at følge prisen fra i dag.`}</p>`;
+    return;
+  }
+
+  // --- linjegraf
+  const cutoff = range === "all" ? 0 : Date.now() - +range * 864e5;
+  const vis = series.map(s => ({ ...s, pts: s.pts.filter(p => +p.d >= cutoff) })).filter(s => s.pts.length);
+  const allDays = [...new Set(vis.flatMap(s => s.pts.map(p => +p.d)))].sort((a, b) => a - b);
+  el.innerHTML = `<p class="label">Prisudvikling</p>${statLine}
+    <div class="pc-top">
+      <div class="seg pc-range" role="group" aria-label="Periode">${RANGES.map(([k, l]) => `<button data-range="${k}" aria-pressed="${k === range}">${l}</button>`).join("")}</div>
+      <span class="grow"></span>
+      <span class="pc-legend">${series.map(s => `<span><i style="background:${s.color}"></i>${s.name}</span>`).join("")}</span>
+    </div>
+    <div class="pc-wrap" tabindex="0" aria-label="Prisgraf. Brug piletasterne for at se priserne dag for dag.">
+      <svg class="pc-svg" role="img" aria-label="Trendpris over tid for ${series.map(s => s.name).join(" og ")}"></svg>
+      <div class="pc-tip" hidden></div>
+    </div>
+    <details class="pc-table"><summary>Vis tallene</summary>
+      <div class="tablewrap"><table><thead><tr><th>Dato</th>${series.map(s => `<th class="num">${s.name}</th>`).join("")}</tr></thead>
+      <tbody>${history.slice().reverse().map(h => `<tr><td>${new Date(h.day + "T12:00:00").toLocaleDateString("da-DK")}</td>${series.map(s => `<td class="num">${fmt(+h[s.col] > 0 ? +h[s.col] : null)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
+    </details>
+    <p class="hint">Cardmarkets trendpris, gemt én gang om dagen siden ${since}.</p>`;
+  el.querySelectorAll("[data-range]").forEach(b => b.onclick = () => onRange(b.dataset.range));
+  if (!allDays.length) { el.querySelector(".pc-wrap").innerHTML = `<p class="empty">Ingen priser i den valgte periode.</p>`; return; }
+
+  const wrap = el.querySelector(".pc-wrap"), svg = el.querySelector(".pc-svg"), tip = el.querySelector(".pc-tip");
+  const W = Math.max(260, wrap.clientWidth), H = 190, L = 52, R = 14, T = 12, B = 26;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("width", W); svg.setAttribute("height", H);
+  const vals = vis.flatMap(s => s.pts.map(p => conv(p.v)));
+  const ticks = niceTicks(Math.min(...vals), Math.max(...vals));
+  const y0 = ticks[0], y1 = ticks[ticks.length - 1];
+  const x0 = allDays[0], x1 = allDays[allDays.length - 1] === x0 ? x0 + 864e5 : allDays[allDays.length - 1];
+  const X = t => L + (t - x0) / (x1 - x0) * (W - L - R);
+  const Y = v => T + (1 - (v - y0) / (y1 - y0 || 1)) * (H - T - B);
+  const xt = [x0, x0 + (x1 - x0) / 2, x1];
+  let g = ticks.map(t => `<line x1="${L}" x2="${W - R}" y1="${Y(t)}" y2="${Y(t)}" class="pc-grid"/><text x="${L - 8}" y="${Y(t) + 4}" text-anchor="end" class="pc-ax">${axisFmt(t)}</text>`).join("");
+  g += xt.map((t, i) => `<text x="${X(t)}" y="${H - 6}" text-anchor="${["start", "middle", "end"][i]}" class="pc-ax">${dayFmt(new Date(t))}</text>`).join("");
+  for (const s of vis) {
+    const d = s.pts.map((p, i) => `${i ? "L" : "M"}${X(+p.d).toFixed(1)},${Y(conv(p.v)).toFixed(1)}`).join("");
+    const last = s.pts[s.pts.length - 1];
+    g += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${X(+last.d)}" cy="${Y(conv(last.v))}" r="4" fill="${s.color}" stroke="var(--panel)" stroke-width="2"/>`;
+  }
+  g += `<line class="pc-cross" x1="0" x2="0" y1="${T}" y2="${H - B}" visibility="hidden"/>
+    <g class="pc-dots"></g><rect x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent" class="pc-hit"/>`;
+  svg.innerHTML = g;
+
+  const cross = svg.querySelector(".pc-cross"), dots = svg.querySelector(".pc-dots");
+  let idx = -1;
+  const show = i => {
+    idx = Math.max(0, Math.min(allDays.length - 1, i));
+    const t = allDays[idx], x = X(t);
+    cross.setAttribute("x1", x); cross.setAttribute("x2", x); cross.setAttribute("visibility", "visible");
+    tip.hidden = false; tip.replaceChildren();
+    const head = document.createElement("div"); head.className = "pc-td"; head.textContent = new Date(t).toLocaleDateString("da-DK", { weekday: "short", day: "numeric", month: "long", year: "numeric" });
+    tip.appendChild(head);
+    dots.innerHTML = "";
+    for (const s of vis) {
+      const p = s.pts.find(p => +p.d === t);
+      const row = document.createElement("div"); row.className = "pc-tr";
+      const key = document.createElement("i"); key.style.background = s.color;
+      const v = document.createElement("b"); v.textContent = p ? fmt(p.v) : "–";
+      const n = document.createElement("span"); n.textContent = s.name;
+      row.append(key, v, n); tip.appendChild(row);
+      if (p) dots.insertAdjacentHTML("beforeend", `<circle cx="${x}" cy="${Y(conv(p.v))}" r="4.5" fill="${s.color}" stroke="var(--panel)" stroke-width="2"/>`);
+    }
+    const tw = tip.offsetWidth, left = x / W * wrap.clientWidth;
+    tip.style.left = Math.min(wrap.clientWidth - tw - 4, Math.max(4, left + 12 + tw > wrap.clientWidth ? left - tw - 12 : left + 12)) + "px";
+  };
+  const hide = () => { cross.setAttribute("visibility", "hidden"); tip.hidden = true; dots.innerHTML = ""; };
+  const nearest = clientX => {
+    const r = svg.getBoundingClientRect(), px = (clientX - r.left) / r.width * W;
+    let best = 0, bd = Infinity; allDays.forEach((t, i) => { const d = Math.abs(X(t) - px); if (d < bd) { bd = d; best = i; } });
+    return best;
+  };
+  const hit = svg.querySelector(".pc-hit");
+  hit.addEventListener("pointermove", e => show(nearest(e.clientX)));
+  hit.addEventListener("pointerdown", e => show(nearest(e.clientX)));
+  hit.addEventListener("pointerleave", hide);
+  wrap.addEventListener("keydown", e => {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); show(idx < 0 ? allDays.length - 1 : idx + (e.key === "ArrowRight" ? 1 : -1)); }
+    if (e.key === "Escape") hide();
+  });
+  wrap.addEventListener("focus", () => show(allDays.length - 1));
+  wrap.addEventListener("blur", hide);
+}
+
 // ---------------- fælles perm (bruges af sæt og mastersets) ----------------
+// owned: { card_id: { normal: n, reverse: m } }. Hvert kort har en normal-plads og, hvis kortet
+// findes i reverse og "Med reverse" er slået til, en reverse-plads.
 function renderGrid({ user, mine, cards, owned, context, head, onReady, officialCount }) {
   const token = S.token, G = S.grid, multi = context === "pokemon";
+  const q = (id, v) => owned[id]?.[v] || 0;
+  const slots = id => (G.rev && hasReverse(id)) ? ["normal", "reverse"] : ["normal"];
+  const missingSlots = id => slots(id).filter(v => !q(id, v));
+  const ownedAny = id => slots(id).some(v => q(id, v));
   $("#app").innerHTML = `${head}
     <div class="stats" id="g-stats"></div>
     <div class="controls">
@@ -603,6 +755,10 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
         <button data-filter="missing" aria-pressed="${G.filter === "missing"}">Mangler</button>
         <button data-filter="owned" aria-pressed="${G.filter === "owned"}">Har</button>
       </div>
+      <div class="seg" role="group" aria-label="Reverse holo">
+        <button data-rev="0" aria-pressed="${!G.rev}">Uden reverse</button>
+        <button data-rev="1" aria-pressed="${G.rev}">Med reverse</button>
+      </div>
       <select id="g-sort" aria-label="Sortering">
         <option value="num">Sortér: ${multi ? "sæt og nummer" : "nummer"}</option><option value="price-desc">Sortér: dyreste først</option>
         <option value="price-asc">Sortér: billigste først</option><option value="name">Sortér: navn</option>
@@ -614,122 +770,157 @@ function renderGrid({ user, mine, cards, owned, context, head, onReady, official
   $("#g-sort").value = G.sort;
 
   const stats = () => {
-    let own = 0, ownVal = 0, miss = 0, missVal = 0, missNo = 0;
-    for (const c of cards) { const p = cardPrice(c.id), q = owned[c.id] || 0;
-      if (q) { own++; if (p) ownVal += p * q; } else { miss++; if (p) missVal += p; else missNo++; } }
-    const pct = cards.length ? Math.round(own / cards.length * 100) : 0;
+    let own = 0, total = 0, ownVal = 0, missVal = 0, missNo = 0, revOwn = 0, revTotal = 0;
+    for (const c of cards) for (const v of slots(c.id)) {
+      const p = cardPrice(c.id, v), n = q(c.id, v);
+      total++; if (v === "reverse") revTotal++;
+      if (n) { own++; if (v === "reverse") revOwn++; if (p) ownVal += p * n; }
+      else if (p) missVal += p; else missNo++;
+    }
+    const pct = total ? Math.round(own / total * 100) : 0;
+    const known = cards.filter(c => S.prices[c.id]?.variants !== undefined).length;
     $("#g-stats").innerHTML = `
-      <div class="stat"><small>${mine ? "Samlet" : esc(user.username) + " har"}</small><b>${own} / ${cards.length}</b><div class="progress"><i style="width:${pct}%"></i></div></div>
+      <div class="stat"><small>${mine ? "Samlet" : esc(user.username) + " har"}${G.rev ? ` · heraf reverse ${revOwn}/${revTotal}` : ""}</small><b>${own} / ${total}</b><div class="progress"><i style="width:${pct}%"></i></div></div>
       <div class="stat"><small>Værdi</small><b>${fmt(ownVal)}</b></div>
-      <div class="stat missing"><small>Pris for de ${miss} manglende${missNo ? ` (${missNo} uden pris)` : ""}</small><b>${fmt(missVal)}</b></div>`;
+      <div class="stat missing"><small>Pris for de ${total - own} manglende${missNo ? ` (${missNo} uden pris)` : ""}</small><b>${fmt(missVal)}</b></div>
+      ${G.rev && known < cards.length ? `<p class="hint" style="grid-column:1/-1;margin:0">Tjekker hvilke kort der findes i reverse… ${known}/${cards.length}</p>` : ""}`;
   };
-  const visible = () => {
-    let list = cards.slice(); const q = G.q.toLowerCase();
-    if (q) list = list.filter(c => c.name.toLowerCase().includes(q) || String(c.localId).toLowerCase() === q || (multi && c._setName.toLowerCase().includes(q)));
-    if (G.view === "list" || G.filter === "missing") list = list.filter(c => !owned[c.id]);
-    else if (G.filter === "owned") list = list.filter(c => owned[c.id]);
-    const sort = G.view === "list" && G.sort === "num" ? "price-desc" : G.sort;
-    if (sort === "num") list.sort(cmpCard);
+  const sortVal = (c, sort) => { const ps = (sort === "list" ? [c._v] : slots(c.id)).map(v => cardPrice(c.id, v)).filter(Boolean); return ps.length ? Math.max(...ps) : null; };
+  const sortList = (list, sort, keyFn) => {
+    if (sort === "num") list.sort((a, b) => cmpCard(a, b) || String(a._v || "").localeCompare(String(b._v || "")));
     else if (sort === "name") list.sort((a, b) => a.name.localeCompare(b.name) || cmpCard(a, b));
-    else list.sort((a, b) => { const x = cardPrice(a.id), y = cardPrice(b.id);
+    else list.sort((a, b) => { const x = keyFn(a), y = keyFn(b);
       if (x == null && y == null) return cmpCard(a, b); if (x == null) return 1; if (y == null) return -1;
       return sort === "price-asc" ? x - y : y - x; });
     return list;
   };
+  const search = list => { const s = G.q.toLowerCase(); return !s ? list : list.filter(c => c.name.toLowerCase().includes(s) || String(c.localId).toLowerCase() === s || (multi && c._setName.toLowerCase().includes(s))); };
+
   const content = () => {
     const el = $("#g-content"); if (!el) return;
-    const list = visible();
     if (G.view === "list") {
+      // én række pr. manglende version
+      const list = sortList(search(cards).flatMap(c => missingSlots(c.id).map(v => ({ ...c, _v: v }))),
+        G.sort === "num" ? "price-desc" : G.sort, c => cardPrice(c.id, c._v));
       let sum = 0, noP = 0;
-      const rows = list.map(c => { const p = cardPrice(c.id); if (p) sum += p; else noP++; const cm = S.prices[c.id]?.cm;
+      const rows = list.map(c => { const p = cardPrice(c.id, c._v); if (p) sum += p; else noP++; const cm = S.prices[c.id]?.cm;
+        const rev = c._v === "reverse";
         return `<tr><td>${c.image ? `<img class="thumb" loading="lazy" src="${esc(imgUrl(c))}" alt="">` : ""}</td>
-          ${multi ? `<td>${esc(c._setName)}</td>` : ""}<td class="num">${esc(c.localId)}</td><td>${esc(c.name)}</td><td>${esc(S.prices[c.id]?.rarity || "")}</td>
-          <td class="num">${fmt(firstPos(cm?.low, cm?.["low-holo"]))}</td><td class="num"><b>${fmt(p)}</b></td>
-          <td class="num">${fmt(firstPos(cm?.avg30, cm?.["avg30-holo"]))}</td>
+          ${multi ? `<td>${esc(c._setName)}</td>` : ""}<td class="num">${esc(c.localId)}</td><td>${esc(c.name)}${rev ? ` <span class="vtag">R</span>` : ""}</td><td>${esc(S.prices[c.id]?.rarity || "")}</td>
+          <td class="num">${fmt(rev ? cm?.["low-holo"] : firstPos(cm?.low, cm?.["low-holo"]))}</td><td class="num"><b>${fmt(p)}</b></td>
+          <td class="num">${fmt(rev ? cm?.["avg30-holo"] : firstPos(cm?.avg30, cm?.["avg30-holo"]))}</td>
           <td><a href="${esc(cmLink(c.name, c._setName))}" target="_blank" rel="noopener">Cardmarket ↗</a></td>
-          ${mine ? `<td><button class="btn small" data-have="${esc(c.id)}">Har den</button></td>` : ""}</tr>`; }).join("");
+          ${mine ? `<td><button class="btn small" data-have="${esc(c.id)}" data-v="${c._v}">Har den</button></td>` : ""}</tr>`; }).join("");
       const cols = 8 + (multi ? 1 : 0) + (mine ? 1 : 0);
       el.innerHTML = list.length ? `<div class="tablewrap"><table>
         <thead><tr><th></th>${multi ? "<th>Sæt</th>" : ""}<th class="num">Nr.</th><th>Kort</th><th>Sjældenhed</th><th class="num">Laveste</th><th class="num">Trend</th><th class="num">Snit 30 d.</th><th></th>${mine ? "<th></th>" : ""}</tr></thead>
         <tbody>${rows}</tbody>
-        <tfoot><tr><td colspan="${multi ? 3 : 2}"></td><td colspan="3">${list.length} kort mangler${noP ? ` · ${noP} uden pris` : ""}</td><td class="num">${fmt(sum)}</td><td colspan="${cols - (multi ? 3 : 2) - 4}"></td></tr></tfoot>
-        </table></div>` : `<p class="empty">Du har dem alle. Flot!</p>`;
+        <tfoot><tr><td colspan="${multi ? 3 : 2}"></td><td colspan="3">${list.length} mangler${noP ? ` · ${noP} uden pris` : ""}</td><td class="num">${fmt(sum)}</td><td colspan="${cols - (multi ? 3 : 2) - 4}"></td></tr></tfoot>
+        </table></div>
+        ${G.rev ? `<p class="hint"><span class="vtag">R</span> = reverse holo. Reverse-prisen er Cardmarkets pris for reverse-versionen.</p>` : ""}` : `<p class="empty">Du har dem alle. Flot!</p>`;
       return;
     }
+    let list = search(cards);
+    if (G.filter === "missing") list = list.filter(c => missingSlots(c.id).length);
+    else if (G.filter === "owned") list = list.filter(c => ownedAny(c.id));
+    list = sortList(list.slice(), G.sort, c => sortVal(c));
     if (!list.length) { el.innerHTML = `<p class="empty">Ingen kort matcher filteret.</p>`; return; }
     el.innerHTML = `<div class="binder">${list.map(c => {
-      const q = owned[c.id] || 0, p = cardPrice(c.id), img = imgUrl(c);
-      return `<div class="pocket${q ? " owned" : ""}" data-id="${esc(c.id)}" tabindex="0" role="button" aria-label="${esc(c.name)} ${esc(c.localId)}${q ? ", har " + q : ""}">
-        ${q > 1 ? `<span class="badge">×${q}</span>` : ""}
+      const sl = slots(c.id), have = sl.filter(v => q(c.id, v)).length, img = imgUrl(c);
+      const state = have === sl.length ? " owned" : have ? " partial" : "";
+      const line = v => { const n = q(c.id, v), p = cardPrice(c.id, v);
+        return `<div class="vrow${n ? " has" : ""}" data-v="${v}">
+          <span class="vl">${sl.length > 1 ? (v === "reverse" ? "R" : "N") : ""}</span>
+          <span class="pr${p == null ? " none" : ""}">${p == null ? (S.prices[c.id] ? "ingen pris" : "…") : fmt(p)}</span>
+          ${mine ? `<span class="qty">${n ? `<button data-act="dec" aria-label="Færre ${VLABEL[v]}">−</button><span>${n}</span>` : ""}<button data-act="inc" aria-label="Tilføj ${VLABEL[v]}">+</button></span>`
+                 : `<span class="qty"><span>${n ? "✓" + (n > 1 ? " ×" + n : "") : "–"}</span></span>`}
+        </div>`; };
+      return `<div class="pocket${state}" data-id="${esc(c.id)}" tabindex="0" role="button" aria-label="${esc(c.name)} ${esc(c.localId)}">
         <div class="img">${img ? `<img loading="lazy" src="${esc(img)}" alt="">` : `<span class="noimg">Intet billede</span>`}</div>
         ${multi ? `<div class="setline">${esc(c._setName)}</div>` : ""}
         <div class="row"><span class="nm">${esc(c.name)}</span><span class="no">${esc(c.localId)}</span></div>
-        <div class="row"><span class="pr${p == null ? " none" : ""}">${p == null ? (S.prices[c.id] ? "ingen pris" : "…") : fmt(p)}</span>
-          ${mine ? `<span class="qty">${q ? `<button data-act="dec" aria-label="Færre">−</button><span>${q}</span>` : ""}<button data-act="inc" aria-label="${q ? "Flere" : "Tilføj til samling"}">+</button></span>` : ""}</div>
+        ${sl.map(line).join("")}
       </div>`; }).join("")}</div>
-      <p class="hint">${mine ? "Tryk + og − for at registrere dine kort. Klik på et kort for detaljer og Cardmarket-link." : "Klik på et kort for detaljer og Cardmarket-link."}</p>`;
+      <p class="hint">${mine ? "Tryk + og − for at registrere dine kort." : ""} ${G.rev ? "N = normal (eller holo), R = reverse holo. Grøn kant = alle versioner, gul = nogle." : ""} Klik på et kort for detaljer og Cardmarket-link.</p>`;
   };
   const all = () => { stats(); content(); };
 
-  async function setQty(id, n) {
+  async function setQty(id, v, n) {
     n = Math.max(0, Math.min(999, n));
-    const before = owned[id] || 0;
-    if (n) owned[id] = n; else delete owned[id];
+    const before = q(id, v);
+    (owned[id] ||= {})[v] = n; if (!n) delete owned[id][v];
     all();
-    const res = await saveQty(id, n);
-    if (res.error) { if (before) owned[id] = before; else delete owned[id]; all(); setStatus("Kunne ikke gemme: " + res.error.message, true); }
+    const res = await saveQty(id, v, n);
+    if (res.error) { if (before) owned[id][v] = before; else delete owned[id][v]; all(); setStatus("Kunne ikke gemme: " + res.error.message, true); }
     else scheduleSnapshot();
   }
   function detail(id) {
     const c = cards.find(x => x.id === id); if (!c) return;
     const dlg = $("#dlg");
+    let hist = null;
+    const paintChart = () => {
+      const el = dlg.querySelector("#dlg-chart"); if (!el || !hist) return;
+      renderPriceChart(el, { history: hist, cm: S.prices[id]?.cm, reverse: hasReverse(id), range: S.chartRange,
+        tracked: hist.length > 0 || ["normal", "reverse"].some(v => q(id, v)),
+        onRange: r => { S.chartRange = r; store.set("kp-range", r); paintChart(); } });
+    };
     const draw = () => {
-      const cm = S.prices[id]?.cm || {}, q = owned[id] || 0;
+      const cm = S.prices[id]?.cm || {}, vars = S.prices[id]?.variants;
       const row = (l, k) => (typeof cm[k] === "number" && cm[k] > 0 ? `<dt>${l}</dt><dd>${fmt(cm[k])}</dd>` : "");
       const rows = row("Trend", "trend") + row("Laveste", "low") + row("Snit 7 dage", "avg7") + row("Snit 30 dage", "avg30") +
-        row("Trend (holo/reverse)", "trend-holo") + row("Laveste (holo/reverse)", "low-holo") + row("Snit 30 d. (holo/reverse)", "avg30-holo");
+        row("Reverse: trend", "trend-holo") + row("Reverse: laveste", "low-holo") + row("Reverse: snit 30 d.", "avg30-holo");
       const off = context === "set" ? officialCount : S.setsById[c._setId]?.cardCount?.official;
+      const vs = hasReverse(id) ? ["normal", "reverse"] : ["normal"];
+      const exists = vars ? [vars.normal && "normal", vars.holo && "holo", vars.reverse && "reverse holo", vars.firstEdition && "1. udgave"].filter(Boolean).join(", ") : "";
       dlg.innerHTML = `<button class="close" aria-label="Luk">×</button><div class="dlg">
         ${c.image ? `<img src="${esc(imgUrl(c, "high"))}" alt="${esc(c.name)}">` : "<div></div>"}
         <div><h3>${esc(c.name)}</h3>
-          <div class="meta">${esc(c._setName)} · ${esc(c.localId)}/${off ?? "?"}${S.prices[id]?.rarity ? " · " + esc(S.prices[id].rarity) : ""}</div>
+          <div class="meta">${esc(c._setName)} · ${esc(c.localId)}/${off ?? "?"}${S.prices[id]?.rarity ? " · " + esc(S.prices[id].rarity) : ""}${exists ? `<br>Findes som: ${esc(exists)}` : ""}</div>
           <dl class="pl">${rows || "<dt>Ingen Cardmarket-pris for dette kort</dt><dd></dd>"}</dl>
+          ${mine ? `<div class="vctl">${vs.map(v => `<div class="hrow"><span class="vname">${VLABEL[v]}</span><span class="grow"></span>
+              <button class="btn small" data-dv="${v}" data-dq="-1" ${q(id, v) ? "" : "disabled"} aria-label="Fjern en ${VLABEL[v]}">−</button>
+              <b class="vcount">${q(id, v)}</b>
+              <button class="btn small primary" data-dv="${v}" data-dq="1" aria-label="Tilføj en ${VLABEL[v]}">+</button></div>`).join("")}</div>`
+                 : `<p class="meta">${vs.map(v => `${VLABEL[v]}: ${q(id, v) ? "har " + q(id, v) : "mangler"}`).join(" · ")}</p>`}
           <div class="acts">
-            ${mine ? `<button class="btn primary" data-dq="1">${q ? "Tilføj en mere" : "Jeg har den"}</button>${q ? `<button class="btn" data-dq="-1">Fjern en (${q})</button>` : ""}` : ""}
             <a class="btn" href="${esc(cmLink(c.name, c._setName))}" target="_blank" rel="noopener">Se kortet på Cardmarket ↗</a>
             <a class="btn" href="${esc(cmSearch(c.name))}" target="_blank" rel="noopener">Søg i alle sæt ↗</a>
             ${multi ? `<a class="btn" href="#/saet/${encodeURIComponent(c._setId)}">Åbn sættet</a>` : ""}
           </div>
-          <p class="hint">Priser: Cardmarkets prisguide via TCGdex, alle sprog samlet. Linket viser engelske kort.</p></div></div>`;
+          <p class="hint">Priser: Cardmarkets prisguide via TCGdex, alle sprog samlet. Linket viser engelske kort.</p></div></div>
+        <div class="dlg-chart" id="dlg-chart"><p class="label">Prisudvikling</p><p class="empty">Henter prishistorik…</p></div>`;
+      paintChart();
     };
     draw();
+    sb.from("price_history").select("day,trend,low,avg30,trend_holo,low_holo,avg30_holo").eq("card_id", id).order("day")
+      .then(({ data }) => { hist = data || []; paintChart(); });
     dlg.onclick = async e => {
       if (e.target === dlg || e.target.closest(".close")) return dlg.close();
       if (e.target.closest("a[href^='#']")) return dlg.close();
-      const b = e.target.closest("[data-dq]"); if (b) { await setQty(id, (owned[id] || 0) + +b.dataset.dq); draw(); }
+      const b = e.target.closest("[data-dq]"); if (b) { const v = b.dataset.dv; await setQty(id, v, q(id, v) + +b.dataset.dq); draw(); }
     };
     dlg.showModal();
   }
 
-  document.querySelectorAll("[data-view]").forEach(b => b.onclick = () => { G.view = b.dataset.view;
-    document.querySelectorAll("[data-view]").forEach(x => x.setAttribute("aria-pressed", x === b)); content(); });
-  document.querySelectorAll("[data-filter]").forEach(b => b.onclick = () => { G.filter = b.dataset.filter;
-    document.querySelectorAll("[data-filter]").forEach(x => x.setAttribute("aria-pressed", x === b)); content(); });
+  const press = (sel, attr, val) => document.querySelectorAll(sel).forEach(x => x.setAttribute("aria-pressed", x.getAttribute(attr) === val));
+  document.querySelectorAll("[data-view]").forEach(b => b.onclick = () => { G.view = b.dataset.view; press("[data-view]", "data-view", G.view); content(); });
+  document.querySelectorAll("[data-filter]").forEach(b => b.onclick = () => { G.filter = b.dataset.filter; press("[data-filter]", "data-filter", G.filter); content(); });
+  document.querySelectorAll("[data-rev]").forEach(b => b.onclick = () => { G.rev = b.dataset.rev === "1"; store.set("kp-rev", G.rev); press("[data-rev]", "data-rev", b.dataset.rev); all(); });
   $("#g-sort").onchange = e => { G.sort = e.target.value; content(); };
   $("#g-q").oninput = e => { G.q = e.target.value.trim(); content(); };
   $("#g-content").onclick = e => {
-    const have = e.target.closest("[data-have]"); if (have) return setQty(have.dataset.have, 1);
+    const have = e.target.closest("[data-have]"); if (have) return setQty(have.dataset.have, have.dataset.v || "normal", 1);
     const pocket = e.target.closest(".pocket"); if (!pocket) return;
-    const id = pocket.dataset.id, act = e.target.closest("[data-act]")?.dataset.act;
-    if (act === "inc") return setQty(id, (owned[id] || 0) + 1);
-    if (act === "dec") return setQty(id, (owned[id] || 0) - 1);
+    const id = pocket.dataset.id, act = e.target.closest("[data-act]")?.dataset.act, v = e.target.closest("[data-v]")?.dataset.v || "normal";
+    if (act === "inc") return setQty(id, v, q(id, v) + 1);
+    if (act === "dec") return setQty(id, v, q(id, v) - 1);
     detail(id);
   };
   $("#g-content").onkeydown = e => { const p = e.target.closest?.(".pocket");
     if (p && e.target === p && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); detail(p.dataset.id); } };
   const refresh = async force => {
     $("#g-refresh").disabled = true;
-    const r = await loadPrices(cards, force, (d, t) => { setStatus(`Henter priser… ${d}/${t}`); all(); });
+    const r = await loadPrices(cards, force, (d, t) => { setStatus(`Henter priser og varianter… ${d}/${t}`); all(); });
     if (token !== S.token) return;
     $("#g-refresh").disabled = false; all();
     setStatus(r.failed ? `${r.failed} kort kunne ikke hentes. Tryk "Opdatér priser" for at prøve igen.` : "", !!r.failed);

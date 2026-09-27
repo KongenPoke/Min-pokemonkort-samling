@@ -27,22 +27,25 @@ export const SET_CODES = {
 // "TG05" og "TG5" er det samme kort; "001" og "1" også
 export const normNo = s => String(s).trim().toUpperCase().replace(/^([A-Z]*)0*(\d+)([A-Z]*)$/, "$1$2$3");
 
-// "1, 4, 25x2, 12-18, TG01-TG03" -> [{ref:"1",qty:1}, ...] + ugyldige stykker
+// "1, 4, 25x2, 12-18, TG01-TG03, 4r, 25rx2" -> [{ref:"1",qty:1,variant:"normal"}, ...] + ugyldige stykker
+// Et "r" efter nummeret betyder reverse holo.
 export function expandTokens(rest) {
   const refs = [], bad = [];
-  const clean = String(rest).replace(/\s*[x×*]\s*(\d+)\b/gi, "x$1");
+  const clean = String(rest).replace(/\s*[x×*]\s*(\d+)\b/gi, "x$1").replace(/(\d)\s+r\b/gi, "$1r");
   for (let tok of clean.split(/[,;\s]+/).filter(Boolean)) {
-    let qty = 1;
+    let qty = 1, variant = "normal";
     const q = tok.match(/^(.+?)x(\d+)$/i);
     if (q) { tok = q[1]; qty = Math.max(1, Math.min(99, +q[2])); }
+    const rv = tok.match(/^(.*\d)r$/i);
+    if (rv) { tok = rv[1]; variant = "reverse"; }
     const r = tok.match(/^([A-Za-z]*)(\d+)-([A-Za-z]*)(\d+)$/);
     if (r) {
       const [, p1, a, p2, b] = r, from = +a, to = +b;
       if ((p2 && p2.toUpperCase() !== p1.toUpperCase()) || to < from || to - from > 400) { bad.push(tok); continue; }
-      for (let n = from; n <= to; n++) refs.push({ ref: p1 + n, qty });
+      for (let n = from; n <= to; n++) refs.push({ ref: p1 + n, qty, variant });
       continue;
     }
-    if (/^[A-Za-z]*\d+[A-Za-z]*$/.test(tok)) refs.push({ ref: tok, qty });
+    if (/^[A-Za-z]*\d+[A-Za-z]*$/.test(tok)) refs.push({ ref: tok, qty, variant });
     else bad.push(tok);
   }
   return { refs, bad };
@@ -104,6 +107,6 @@ export function matchRefs(refs, cards) {
   const index = new Map();
   for (const c of cards) { const k = normNo(c.localId); if (!index.has(k)) index.set(k, c); }
   const found = [], missing = [];
-  for (const r of refs) { const c = index.get(normNo(r.ref)); if (c) found.push({ card: c, qty: r.qty }); else missing.push(r.ref); }
+  for (const r of refs) { const c = index.get(normNo(r.ref)); if (c) found.push({ card: c, qty: r.qty, variant: r.variant || "normal" }); else missing.push(r.ref); }
   return { found, missing };
 }
